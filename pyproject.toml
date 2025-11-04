@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "chacha-cli"
+version = "0.1.0"
+description = "🕺 Chacha — your AI-powered CLI for code explanation and git automation"
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{ include = "chacha" }]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0"
+typer = "*"
+requests = "*"
+gitpython = "*"
+PyPDF2 = "*"
+python-dotenv = "*"
+
+[tool.poetry.scripts]
+chacha = "chacha.cli:app"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+
