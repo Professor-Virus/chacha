@@ -8,7 +8,7 @@ readme = "README.md"
 packages = [{ include = "chacha" }]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<4.0"
+python = ">=3.10,<4.0"
 typer = "*"
 requests = "*"
 gitpython = "*"
@@ -23,3 +23,8 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 
+[dependency-groups]
+dev = [
+    "black (>=25.9.0,<26.0.0)",
+    "isort (>=7.0.0,<8.0.0)"
+]
