@@ -1,6 +1,6 @@
-"""AI utilities using Claude via Anthropic API.
+"""AI utilities using Anthropic (Claude) and Google Gemini APIs.
 
-Includes simple PDF reading support.
+Includes simple PDF reading support and provider auto-detection.
 """
 
 from __future__ import annotations
@@ -18,14 +18,55 @@ except Exception:  # pragma: no cover - optional at runtime
 
 load_dotenv()
 
+PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_GEMINI = "gemini"
 
-def get_api_key() -> str:
-    key = os.getenv("CLAUDE_API_KEY")
-    if not key:
-        raise ValueError(
-            "❌ Missing CLAUDE_API_KEY. Please set it in your .env or environment."
-        )
-    return key
+
+def _normalize_provider(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    v = value.strip().lower()
+    if v in {PROVIDER_ANTHROPIC, PROVIDER_GEMINI}:
+        return v
+    return None
+
+
+def get_provider() -> str:
+    """Return the active provider.
+
+    Resolution order:
+    1) CHACHA_PROVIDER if valid ("anthropic" or "gemini")
+    2) Auto-detect by env keys (CLAUDE_API_KEY -> anthropic, GEMINI_API_KEY/GOOGLE_API_KEY -> gemini)
+    3) Error if none found
+    """
+    configured = _normalize_provider(os.getenv("CHACHA_PROVIDER"))
+    if configured:
+        return configured
+
+    if os.getenv("CLAUDE_API_KEY"):
+        return PROVIDER_ANTHROPIC
+    if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        return PROVIDER_GEMINI
+
+    raise ValueError(
+        "❌ No AI provider configured. Set CHACHA_PROVIDER=anthropic|gemini and provide the corresponding API key."
+    )
+
+
+def get_api_key(provider: str) -> str:
+    if provider == PROVIDER_ANTHROPIC:
+        key = os.getenv("CLAUDE_API_KEY")
+        if not key:
+            raise ValueError("❌ Missing CLAUDE_API_KEY for Anthropic.")
+        return key
+    if provider == PROVIDER_GEMINI:
+        key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not key:
+            raise ValueError(
+                "❌ Missing GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini."
+            )
+        return key
+    raise ValueError(f"❌ Unknown provider: {provider}")
 
 
 def _read_file_content(path: str) -> str:
@@ -46,9 +87,17 @@ def _read_file_content(path: str) -> str:
 
 
 def explain_file(path: str) -> str:
-    api_key = get_api_key()
+    provider = get_provider()
     content = _read_file_content(path)
+    if provider == PROVIDER_ANTHROPIC:
+        return _explain_with_anthropic(content)
+    if provider == PROVIDER_GEMINI:
+        return _explain_with_gemini(content)
+    return "⚠️ Unsupported provider."
 
+
+def _explain_with_anthropic(content: str) -> str:
+    api_key = get_api_key(PROVIDER_ANTHROPIC)
     response = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -64,12 +113,46 @@ def explain_file(path: str) -> str:
         },
         timeout=60,
     )
-
     data = response.json()
-    if isinstance(data, dict) and "content" in data and data["content"]:
+    if isinstance(data, dict) and data.get("content"):
         first = data["content"][0]
         if isinstance(first, dict) and "text" in first:
             return first["text"]
-    return "⚠️ No explanation received."
+    return "⚠️ No explanation received from Anthropic."
+
+
+def _explain_with_gemini(content: str) -> str:
+    api_key = get_api_key(PROVIDER_GEMINI)
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-1.5-pro:generateContent"
+        f"?key={api_key}"
+    )
+    payload = {
+        "contents": [
+            {"parts": [{"text": f"Explain this code:\n\n{content}"}]}
+        ]
+    }
+    response = requests.post(url, json=payload, timeout=60)
+    data = response.json()
+
+    # Expected shape: {
+    #   "candidates": [
+    #     {"content": {"parts": [{"text": "..."}]}}
+    #   ]
+    # }
+    if isinstance(data, dict):
+        candidates = data.get("candidates")
+        if isinstance(candidates, list) and candidates:
+            first = candidates[0]
+            if isinstance(first, dict):
+                content_obj = first.get("content")
+                if isinstance(content_obj, dict):
+                    parts = content_obj.get("parts")
+                    if isinstance(parts, list) and parts:
+                        part0 = parts[0]
+                        if isinstance(part0, dict) and "text" in part0:
+                            return str(part0["text"]) or ""
+    return "⚠️ No explanation received from Gemini."
 
 
