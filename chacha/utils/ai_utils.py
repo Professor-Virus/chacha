@@ -125,7 +125,7 @@ def _explain_with_gemini(content: str) -> str:
     api_key = get_api_key(PROVIDER_GEMINI)
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.5-pro:generateContent"
+        "gemini-2.5-flash"
         f"?key={api_key}"
     )
     payload = {
