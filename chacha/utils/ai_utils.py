@@ -123,10 +123,11 @@ def _explain_with_anthropic(content: str) -> str:
 
 def _explain_with_gemini(content: str) -> str:
     api_key = get_api_key(PROVIDER_GEMINI)
+    model = os.getenv("CHACHA_GEMINI_MODEL") or "gemini-2.5-flash"
+    api_version = os.getenv("CHACHA_GEMINI_API_VERSION") or "v1beta"
     url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.5-flash"
-        f"?key={api_key}"
+        f"https://generativelanguage.googleapis.com/{api_version}/models/"
+        f"{model}:generateContent?key={api_key}"
     )
     payload = {
         "contents": [
