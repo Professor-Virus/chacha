@@ -87,3 +87,5 @@ export GEMINI_API_KEY=AIza...
 MIT
 
 
+### Use this to reinstall
+pipx install git+https://github.com/Professor-Virus/chacha.git@branch-name
