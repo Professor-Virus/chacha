@@ -131,20 +131,57 @@ def _explain_with_gemini(content: str) -> str:
     payload = {
         "contents": [
             {"parts": [{"text": f"Explain this code:\n\n{content}"}]}
-        ]
+        ],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 2000,
+        },
+        # Try to reduce accidental safety blocks for benign code explanations
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUAL_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ],
     }
-    response = requests.post(url, json=payload, timeout=60)
+    response = requests.post(
+        url,
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=60,
+    )
+
+    # Non-200 → surface server error message
+    if response.status_code != 200:
+        try:
+            err = response.json()
+            if isinstance(err, dict) and "error" in err:
+                msg = err.get("error", {}).get("message") or str(err)
+                return f"⚠️ Gemini error ({response.status_code}): {msg}"
+            return f"⚠️ Gemini HTTP {response.status_code}: {response.text[:500]}"
+        except Exception:
+            return f"⚠️ Gemini HTTP {response.status_code}: {response.text[:500]}"
+
     data = response.json()
 
-    # Expected shape: {
-    #   "candidates": [
-    #     {"content": {"parts": [{"text": "..."}]}}
-    #   ]
-    # }
+    # API-level error envelope
+    if isinstance(data, dict) and "error" in data:
+        msg = data.get("error", {}).get("message") or str(data)
+        return f"⚠️ Gemini error: {msg}"
+
+    # Safety/prompt feedback
+    if isinstance(data, dict) and "promptFeedback" in data:
+        fb = data.get("promptFeedback") or {}
+        block = fb.get("blockReason")
+        if block:
+            return f"⚠️ Gemini blocked the request: {block}"
+
+    # Normal candidate extraction
     if isinstance(data, dict):
         candidates = data.get("candidates")
         if isinstance(candidates, list) and candidates:
             first = candidates[0]
+            # If there's text, return it, otherwise surface finish reason
             if isinstance(first, dict):
                 content_obj = first.get("content")
                 if isinstance(content_obj, dict):
@@ -153,6 +190,10 @@ def _explain_with_gemini(content: str) -> str:
                         part0 = parts[0]
                         if isinstance(part0, dict) and "text" in part0:
                             return str(part0["text"]) or ""
+                finish = first.get("finishReason") or first.get("safetyRatings")
+                if finish:
+                    return f"⚠️ Gemini returned no text. Info: {finish}"
+
     return "⚠️ No explanation received from Gemini."
 
 
