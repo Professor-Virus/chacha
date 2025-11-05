@@ -125,7 +125,7 @@ def _explain_with_gemini(content: str) -> str:
     api_key = get_api_key(PROVIDER_GEMINI)
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-1.5-pro:generateContent"
+        "gemini-2.5-pro:generateContent"
         f"?key={api_key}"
     )
     payload = {
@@ -136,13 +136,6 @@ def _explain_with_gemini(content: str) -> str:
             "temperature": 0.2,
             "maxOutputTokens": 2000,
         },
-        # Try to reduce accidental safety blocks for benign code explanations
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ],
     }
     response = requests.post(
         url,
