@@ -32,7 +32,7 @@ Input: file path (Python, JS, PDF)
 Flow:
 Read file content
 If PDF → extract text (PyPDF2)
-Send content to Claude API
+Send content to configured AI provider (Anthropic Claude or Google Gemini)
 Print result in formatted output
 File: commands/explain.py
 Depends on: utils/ai_utils.py and utils/file_utils.py
@@ -58,7 +58,29 @@ Display summary or “story of the commit”
 
 ## Environment
 
-Copy `.env.example` to `.env` and adjust values as needed.
+Set one of the supported providers and its API key. You can export these in your shell profile or place them in a `.env` file in the directory where you run the command.
+
+Provider selection (any one of these works):
+
+- Explicitly choose a provider:
+  - `CHACHA_PROVIDER=anthropic` with `CLAUDE_API_KEY=...`
+  - `CHACHA_PROVIDER=gemini` with `GEMINI_API_KEY=...` (or `GOOGLE_API_KEY=...`)
+
+- Auto-detection (no `CHACHA_PROVIDER`):
+  - If `CLAUDE_API_KEY` is set → uses Anthropic
+  - Else if `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set → uses Gemini
+
+Examples:
+
+```bash
+# Anthropic (Claude)
+export CHACHA_PROVIDER=anthropic
+export CLAUDE_API_KEY=sk-ant-...
+
+# Google Gemini
+export CHACHA_PROVIDER=gemini
+export GEMINI_API_KEY=AIza...
+```
 
 ## License
 
