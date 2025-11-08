@@ -20,11 +20,11 @@ from chacha.utils.git_utils import (
 )
 
 
-app = typer.Typer()
+app = typer.Typer(invoke_without_command=True, help="Explain one commit by default, or N cohesively via -c/--cohesive.")
 
 
-@app.command()
-def run(
+@app.callback()
+def main(
     target: Optional[str] = typer.Argument(
         None,
         help="Commit ref, hash, or negative index (e.g., -1 for HEAD, -2 for previous).",
@@ -50,7 +50,6 @@ def run(
         explain_commits_cohesively(target, cohesive, provider)
     else:
         explain_single_commit(target, provider)
-
 
 def explain_single_commit(target: Optional[str], provider: str) -> None:
     commit_spec = target or "-1"
