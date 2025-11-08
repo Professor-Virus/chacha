@@ -161,108 +161,93 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
 
 
 def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider: str) -> None:
-    # Determine anchor commit; default to HEAD
-    anchor_sha = resolve_commit_sha(anchor_spec or "-1")
-    if not anchor_sha:
-        typer.echo(f"❌ Could not resolve commit: {anchor_spec}", err=True)
+    # Pairwise mode: explain the delta between HEAD~N and HEAD~(N-1) (oldest pair),
+    # minimizing tokens by sending only that delta plus brief commit context.
+    if count < 1:
+        typer.echo("❌ --cohesive N must be >= 1.", err=True)
         raise typer.Exit(code=1)
 
-    newest_to_oldest = rev_list(anchor_sha, count)
-    if not newest_to_oldest:
-        typer.echo("❌ No commits found for the requested range.", err=True)
+    # Resolve the pair: older = HEAD~N, newer = HEAD~(N-1) (newer is closer to HEAD)
+    older_expr = f"HEAD~{count}"
+    newer_expr = f"HEAD~{max(count - 1, 0)}"
+    older_sha = resolve_commit_sha(older_expr)
+    newer_sha = resolve_commit_sha(newer_expr)
+    if not older_sha or not newer_sha:
+        typer.echo(f"❌ Not enough history to resolve {older_expr} or {newer_expr}.", err=True)
         raise typer.Exit(code=1)
 
-    # Oldest -> newest for narrative
-    shas = list(reversed(newest_to_oldest))
-    oldest_sha = shas[0]
+    older_subject = get_commit_subject(older_sha)
+    newer_subject = get_commit_subject(newer_sha)
 
-    # Compute base for cumulative diff: parent of oldest, else empty tree (for root)
-    parents = get_commit_parents(oldest_sha)
-    base = parents[0] if parents else get_empty_tree_sha()
-
-    # Context: subjects for narrative
-    subjects = [get_commit_subject(sha) for sha in shas]
-    subjects_bullets = "\n".join(f"- {i+1}/{len(shas)} {shas[i][:12]} — {subjects[i]}" for i in range(len(shas)))
-
-    # Cumulative stats
-    shortstat = get_cumulative_diff_shortstat(base, anchor_sha)
-    numstat_rows = get_cumulative_diff_numstat(base, anchor_sha)
-    # Rank files by total churn and keep top-K
-    top_k = 15
+    # Delta between the two commits
+    shortstat = get_cumulative_diff_shortstat(older_sha, newer_sha)
+    numstat_rows = get_cumulative_diff_numstat(older_sha, newer_sha)
     ranked = sorted(numstat_rows, key=lambda r: (r[0] + r[1]), reverse=True)
-    top_files = ranked[:top_k]
+    top_files = ranked[:12]
     top_files_lines = [
         f"- {adds + dels:>4} lines changed (+{adds}/-{dels})  {path}"
         for adds, dels, path in top_files
     ] or ["(no files)"]
-
-    # Cumulative diff (trimmed)
-    cumulative_patch = get_cumulative_diff_patch(base, anchor_sha, max_bytes=50_000)
+    patch = get_cumulative_diff_patch(older_sha, newer_sha, max_bytes=50_000)
 
     prompt = "\n".join(
         [
-            "You are a senior engineer. Explain these commits as a cohesive change set (<=350 words).",
-            "Focus on the overarching goal, how changes evolve across the set, and net outcomes.",
+            "You are a senior engineer. Provide a cohesive explanation (<=250 words) for the net changes between two adjacent commits.",
             "",
-            f"Commit range: {base[:12]}..{anchor_sha[:12]}",
+            f"Pair: {older_sha[:12]} → {newer_sha[:12]}",
+            f"- Older subject: {older_subject}",
+            f"- Newer subject: {newer_subject}",
             "",
-            "Commits (oldest → newest):",
-            subjects_bullets,
-            "",
-            "Cumulative shortstat:",
+            "Shortstat:",
             shortstat or "(none)",
             "",
             "Top changed files by churn:",
             *top_files_lines,
             "",
-            "Unified cumulative diff (trimmed):",
+            "Unified diff (trimmed):",
             "```diff",
-            cumulative_patch or "(no patch)",
+            patch or "(no patch)",
             "```",
             "",
             "Please produce:",
             "- TL;DR (1-2 sentences)",
             "- Key changes by theme (bulleted)",
-            "- Risks and potential regressions",
+            "- Risks/regressions to watch for",
             "- Tests to add or update",
         ]
     )
-
-    response = generate_text(prompt, max_tokens=1100, temperature=0.2)
-    # Fallback: retry without the full diff if model still returns no text
+    response = generate_text(prompt, max_tokens=700, temperature=0.2)
     if isinstance(response, str) and response.strip().startswith("⚠️"):
+        # Fallback without diff
         prompt_no_diff = "\n".join(
             [
-                "Explain this cohesive set briefly (<=250 words).",
-                f"Commit range: {base[:12]}..{anchor_sha[:12]}",
+                "Explain this adjacent-commit delta briefly (<=180 words).",
+                f"Pair: {older_sha[:12]} → {newer_sha[:12]}",
+                f"- Older subject: {older_subject}",
+                f"- Newer subject: {newer_subject}",
                 "",
-                "Commits:",
-                subjects_bullets,
-                "",
-                "Cumulative shortstat:",
+                "Shortstat:",
                 shortstat or "(none)",
                 "",
                 "Top changed files:",
                 *top_files_lines,
             ]
         )
-        response = generate_text(prompt_no_diff, max_tokens=600, temperature=0.2)
-
-    # Final fallback: deterministic bullet summary (no LLM)
+        response = generate_text(prompt_no_diff, max_tokens=420, temperature=0.2)
     if isinstance(response, str) and response.strip().startswith("⚠️"):
-        tldr_subjects = "; ".join(subjects[:4]) + ("; …" if len(subjects) > 4 else "")
+        # Deterministic fallback
         lines: List[str] = []
-        lines.append(f"TL;DR: {len(shas)} commits — {tldr_subjects}")
+        lines.append(f"TL;DR: Changes from {older_sha[:12]} → {newer_sha[:12]}")
+        lines.append(f"- Older: {older_subject}")
+        lines.append(f"- Newer: {newer_subject}")
         lines.append("")
-        lines.append("Key changes (top files):")
+        lines.append("Top changed files:")
         lines.extend(top_files_lines)
-        lines.append("")
-        lines.append("Note: Cohesive LLM summary unavailable due to model limits.")
         response = "\n".join(lines)
 
     box = ui_utils.format_box(
         title="Chacha — Cohesive Commit Explanation",
-        subtitle=f"Provider: {provider}  •  Commits: {len(shas)} (ending at {anchor_sha[:12]})",
+        subtitle=f"Provider: {provider}  •  Pair: {older_sha[:12]} → {newer_sha[:12]}",
         content=response,
     )
     typer.echo(box)
