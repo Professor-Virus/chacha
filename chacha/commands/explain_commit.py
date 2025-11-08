@@ -67,23 +67,6 @@ def _truncate(text: str, limit: int) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _split_patch_by_file(patch: str) -> List[str]:
-    """Split a unified diff into per-file chunks using 'diff --git' delimiters."""
-    if not patch:
-        return []
-    parts: List[str] = []
-    current: List[str] = []
-    for line in patch.splitlines():
-        if line.startswith("diff --git "):
-            if current:
-                parts.append("\n".join(current))
-                current = []
-        current.append(line)
-    if current:
-        parts.append("\n".join(current))
-    return parts
-
-
 def explain_single_commit(target: Optional[str], provider: str) -> None:
     commit_spec = target or "-1"
     sha = resolve_commit_sha(commit_spec)
@@ -97,7 +80,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     body = get_commit_body(sha)
     files = get_commit_files_changed(sha)
     stats = get_commit_stats(sha)
-    patch = get_commit_patch(sha, max_bytes=30_000)
+    patch = get_commit_patch(sha, max_bytes=80_000)
 
     files_preview = "\n".join(f"- {f}" for f in files[:50])
     if len(files) > 50:
@@ -137,12 +120,12 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     )
     prompt = "\n".join(prompt_parts)
 
-    response = generate_text(prompt, max_tokens=1200, temperature=0.2)
+    response = generate_text(prompt, max_tokens=1600, temperature=0.2)
     # Fallback if provider returned no text
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         compact = "\n".join(
             [
-                "Explain this commit succinctly (<=180 words).",
+                "Explain this commit succinctly (<=200 words).",
                 f"SHA: {sha}",
                 f"Subject: {subject}",
                 "Files:",
@@ -151,48 +134,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
                 stats or "(no stats)",
             ]
         )
-        response = generate_text(compact, max_tokens=500, temperature=0.2)
-        # If compact also fails, perform per-file mini-summaries and synthesize
-        if isinstance(response, str) and response.strip().startswith("⚠️"):
-            per_file_sections: List[str] = []
-            file_patches = _split_patch_by_file(patch)
-            max_files = 10
-            for idx, file_diff in enumerate(file_patches[:max_files], start=1):
-                file_prompt = "\n".join(
-                    [
-                        "Summarize the changes in this file (<=80 words) with bullets for key edits:",
-                        "```diff",
-                        _truncate(file_diff, 6000),
-                        "```",
-                    ]
-                )
-                file_summary = generate_text(file_prompt, max_tokens=220, temperature=0.2)
-                # Avoid surfacing provider warnings inline
-                if isinstance(file_summary, str) and file_summary.strip().startswith("⚠️"):
-                    file_summary = "(summary unavailable due to model limits)"
-                per_file_sections.append(f"File {idx}:\n{file_summary}")
-
-            # Synthesize final from per-file summaries
-            synth_prompt = "\n".join(
-                [
-                    "Create a concise commit explanation (<=220 words) using these per-file summaries.",
-                    "Include: TL;DR, Key changes, Risks, Tests.",
-                    "",
-                    "\n\n---\n\n".join(per_file_sections),
-                ]
-            )
-            synthesized = generate_text(synth_prompt, max_tokens=360, temperature=0.2)
-            if isinstance(synthesized, str) and synthesized.strip().startswith("⚠️"):
-                # Fall back to just showing the per-file summaries
-                response = "\n\n".join(
-                    [
-                        "Commit explanation synthesized from per-file summaries (model output limited):",
-                        "",
-                        "\n\n---\n\n".join(per_file_sections),
-                    ]
-                )
-            else:
-                response = synthesized
+        response = generate_text(compact, max_tokens=800, temperature=0.2)
     box = ui_utils.format_box(
         title="Chacha — Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commit: {sha[:12]}",
@@ -216,88 +158,29 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
     # Oldest -> newest for narrative
     shas = list(reversed(newest_to_oldest))
 
-    # Step 1: Summarize each commit individually with small diff budget
-    per_commit_patch_budget = 10_000
-    per_commit_summaries: List[str] = []
+    # Build a concise, deterministic bullet summary without calling the LLM
+    subjects = [get_commit_subject(sha) for sha in shas]
+    tldr_subjects = "; ".join(subjects[:4]) + ("; …" if len(subjects) > 4 else "")
+    lines: List[str] = []
+    lines.append(f"TL;DR: {len(shas)} commits — {tldr_subjects}")
+    lines.append("")
+    lines.append("Key changes:")
     for i, sha in enumerate(shas, start=1):
-        subject = get_commit_subject(sha)
-        author = get_commit_author(sha)
-        date = get_commit_date(sha)
+        subject = subjects[i - 1]
         files = get_commit_files_changed(sha)
-        stats = get_commit_stats(sha)
-        patch = get_commit_patch(sha, max_bytes=per_commit_patch_budget)
-        files_preview = "\n".join(f"- {f}" for f in files[:30])
-        commit_prompt = "\n".join(
-            [
-                "Summarize this commit for a code review (<=200 words):",
-                f"- SHA: {sha}",
-                f"- Subject: {subject}",
-                f"- Author: {author}",
-                f"- Date: {date}",
-                "Files:",
-                files_preview or "(none)",
-                "Stats:",
-                stats or "(no stats)",
-                "Diff (may be truncated):",
-                "```diff",
-                patch or "(no patch)",
-                "```",
-                "",
-                "Output format:",
-                "- TL;DR:",
-                "- Key changes:",
-                "- Risks:",
-                "- Tests:",
-            ]
-        )
-        summary = generate_text(commit_prompt, max_tokens=500, temperature=0.2)
-        if isinstance(summary, str) and summary.strip().startswith("⚠️"):
-            compact_commit_prompt = "\n".join(
-                [
-                    "Summarize this commit briefly (<=100 words):",
-                    f"SHA: {sha}",
-                    f"Subject: {subject}",
-                    "Files:",
-                    files_preview or "(none)",
-                    "Stats:",
-                    stats or "(no stats)",
-                ]
-            )
-            summary = generate_text(compact_commit_prompt, max_tokens=240, temperature=0.2)
-        # Keep each per-commit summary short to avoid MAX_TOKENS in the final pass
-        per_commit_summaries.append(f"Commit {i}/{len(shas)} {sha[:12]} — {subject}\n{_truncate(summary, 600)}")
+        lines.append(f"- {i}/{len(shas)} {sha[:12]} — {subject} ({len(files)} files)")
+        for f in files[:8]:
+            lines.append(f"  • {f}")
+        if len(files) > 8:
+            lines.append(f"  • … (+{len(files) - 8} more)")
+    lines.append("")
+    lines.append("Note: Cohesive view kept brief intentionally. Use single-commit for deeper diff context.")
 
-    # Step 2: Produce a cohesive narrative from the per-commit summaries
-    joined_summaries = "\n\n---\n\n".join(per_commit_summaries)
-    final_prompt = "\n".join(
-        [
-            "You are a senior engineer. Explain these commits as a cohesive change set (<=350 words).",
-            "Focus on the overarching goal, how changes evolve commit-to-commit, and cumulative impact.",
-            "",
-            "Please produce:",
-            "- TL;DR (1-2 sentences) for the overall set",
-            "- Narrative: how the set of commits fits together",
-            "- Key changes by theme (bulleted)",
-            "- Risks across the set",
-            "- Tests to add or update covering the whole change",
-            "",
-            "Per-commit summaries:",
-            joined_summaries,
-        ]
-    )
-    response = generate_text(final_prompt, max_tokens=800, temperature=0.2)
-    # Fallback: if still no text, emit a minimal cohesive summary locally
-    if isinstance(response, str) and response.strip().startswith("⚠️"):
-        header = [
-            "Overall cohesive narrative could not be generated due to model token limits.",
-            "Showing per-commit summaries instead:",
-            "",
-        ]
-        response = _truncate("\n".join(header) + joined_summaries, 8000)
+    content = "\n".join(lines)
     box = ui_utils.format_box(
         title="Chacha — Cohesive Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commits: {len(shas)} (ending at {shas[-1][:12]})",
-        content=response,
+        content=content,
     )
     typer.echo(box)
 
