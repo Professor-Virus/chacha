@@ -67,6 +67,23 @@ def _truncate(text: str, limit: int) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
+def _split_patch_by_file(patch: str) -> List[str]:
+    """Split a unified diff into per-file chunks using 'diff --git' delimiters."""
+    if not patch:
+        return []
+    parts: List[str] = []
+    current: List[str] = []
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            if current:
+                parts.append("\n".join(current))
+                current = []
+        current.append(line)
+    if current:
+        parts.append("\n".join(current))
+    return parts
+
+
 def explain_single_commit(target: Optional[str], provider: str) -> None:
     commit_spec = target or "-1"
     sha = resolve_commit_sha(commit_spec)
@@ -135,6 +152,47 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
             ]
         )
         response = generate_text(compact, max_tokens=500, temperature=0.2)
+        # If compact also fails, perform per-file mini-summaries and synthesize
+        if isinstance(response, str) and response.strip().startswith("⚠️"):
+            per_file_sections: List[str] = []
+            file_patches = _split_patch_by_file(patch)
+            max_files = 10
+            for idx, file_diff in enumerate(file_patches[:max_files], start=1):
+                file_prompt = "\n".join(
+                    [
+                        "Summarize the changes in this file (<=80 words) with bullets for key edits:",
+                        "```diff",
+                        _truncate(file_diff, 6000),
+                        "```",
+                    ]
+                )
+                file_summary = generate_text(file_prompt, max_tokens=220, temperature=0.2)
+                # Avoid surfacing provider warnings inline
+                if isinstance(file_summary, str) and file_summary.strip().startswith("⚠️"):
+                    file_summary = "(summary unavailable due to model limits)"
+                per_file_sections.append(f"File {idx}:\n{file_summary}")
+
+            # Synthesize final from per-file summaries
+            synth_prompt = "\n".join(
+                [
+                    "Create a concise commit explanation (<=220 words) using these per-file summaries.",
+                    "Include: TL;DR, Key changes, Risks, Tests.",
+                    "",
+                    "\n\n---\n\n".join(per_file_sections),
+                ]
+            )
+            synthesized = generate_text(synth_prompt, max_tokens=360, temperature=0.2)
+            if isinstance(synthesized, str) and synthesized.strip().startswith("⚠️"):
+                # Fall back to just showing the per-file summaries
+                response = "\n\n".join(
+                    [
+                        "Commit explanation synthesized from per-file summaries (model output limited):",
+                        "",
+                        "\n\n---\n\n".join(per_file_sections),
+                    ]
+                )
+            else:
+                response = synthesized
     box = ui_utils.format_box(
         title="Chacha — Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commit: {sha[:12]}",
