@@ -224,7 +224,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         ]
     )
     response = generate_text(prompt, max_tokens=1100, temperature=0.2)
-    if isinstance(response, str) and response.strip().startsWith("⚠️"):
+    if isinstance(response, str) and response.strip().startswith("⚠️"):
         prompt_no_diff = "\n".join(
             [
                 "Explain this cohesive set briefly (<=250 words).",
