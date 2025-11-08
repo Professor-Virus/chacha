@@ -71,7 +71,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     body = get_commit_body(sha)
     files = get_commit_files_changed(sha)
     stats = get_commit_stats(sha)
-    patch = get_commit_patch(sha, max_bytes=120_000)
+    patch = get_commit_patch(sha, max_bytes=80_000)
 
     files_preview = "\n".join(f"- {f}" for f in files[:50])
     if len(files) > 50:
@@ -111,7 +111,21 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     )
     prompt = "\n".join(prompt_parts)
 
-    response = generate_text(prompt, max_tokens=1800, temperature=0.2)
+    response = generate_text(prompt, max_tokens=1600, temperature=0.2)
+    # Fallback if provider returned no text
+    if isinstance(response, str) and response.strip().startswith("⚠️"):
+        compact = "\n".join(
+            [
+                "Explain this commit succinctly.",
+                f"SHA: {sha}",
+                f"Subject: {subject}",
+                "Files:",
+                files_preview or "(none)",
+                "Stats:",
+                stats or "(no stats)",
+            ]
+        )
+        response = generate_text(compact, max_tokens=800, temperature=0.2)
     box = ui_utils.format_box(
         title="Chacha — Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commit: {sha[:12]}",
@@ -135,10 +149,9 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
     # Oldest -> newest for narrative
     shas = list(reversed(newest_to_oldest))
 
-    # Heuristic patch budget to avoid overlong prompts
-    per_commit_patch_budget = max(40_000 // max(1, len(shas)), 10_000)
-
-    sections: List[str] = []
+    # Step 1: Summarize each commit individually with small diff budget
+    per_commit_patch_budget = 12_000
+    per_commit_summaries: List[str] = []
     for i, sha in enumerate(shas, start=1):
         subject = get_commit_subject(sha)
         author = get_commit_author(sha)
@@ -146,14 +159,16 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         files = get_commit_files_changed(sha)
         stats = get_commit_stats(sha)
         patch = get_commit_patch(sha, max_bytes=per_commit_patch_budget)
-        sections.extend(
+        files_preview = "\n".join(f"- {f}" for f in files[:30])
+        commit_prompt = "\n".join(
             [
-                f"=== Commit {i}/{len(shas)} — {sha[:12]} ===",
-                f"Subject: {subject}",
-                f"Author: {author}",
-                f"Date: {date}",
+                "Summarize this commit for a code review:",
+                f"- SHA: {sha}",
+                f"- Subject: {subject}",
+                f"- Author: {author}",
+                f"- Date: {date}",
                 "Files:",
-                *(f"- {f}" for f in files[:30]),
+                files_preview or "(none)",
                 "Stats:",
                 stats or "(no stats)",
                 "Diff (may be truncated):",
@@ -161,26 +176,48 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 patch or "(no patch)",
                 "```",
                 "",
+                "Output format:",
+                "- TL;DR:",
+                "- Key changes:",
+                "- Risks:",
+                "- Tests:",
             ]
         )
+        summary = generate_text(commit_prompt, max_tokens=600, temperature=0.2)
+        if isinstance(summary, str) and summary.strip().startswith("⚠️"):
+            compact_commit_prompt = "\n".join(
+                [
+                    "Summarize this commit briefly:",
+                    f"SHA: {sha}",
+                    f"Subject: {subject}",
+                    "Files:",
+                    files_preview or "(none)",
+                    "Stats:",
+                    stats or "(no stats)",
+                ]
+            )
+            summary = generate_text(compact_commit_prompt, max_tokens=300, temperature=0.2)
+        per_commit_summaries.append(f"Commit {i}/{len(shas)} {sha[:12]} — {subject}\n{summary}")
 
-    system_instructions = [
-        "You are a senior engineer. Explain these commits as a cohesive change set.",
-        "Focus on the overarching goal, how changes evolve commit-to-commit, and cumulative impact.",
-        "",
-        "Please produce:",
-        "- TL;DR (1-2 sentences) for the overall set",
-        "- Narrative: how the set of commits fits together",
-        "- Key changes by theme (bulleted)",
-        "- Risks across the set",
-        "- Tests to add or update covering the whole change",
-        "",
-        "Commits (oldest to newest):",
-        *sections,
-    ]
-
-    prompt = "\n".join(system_instructions)
-    response = generate_text(prompt, max_tokens=2200, temperature=0.2)
+    # Step 2: Produce a cohesive narrative from the per-commit summaries
+    joined_summaries = "\n\n---\n\n".join(per_commit_summaries)
+    final_prompt = "\n".join(
+        [
+            "You are a senior engineer. Explain these commits as a cohesive change set.",
+            "Focus on the overarching goal, how changes evolve commit-to-commit, and cumulative impact.",
+            "",
+            "Please produce:",
+            "- TL;DR (1-2 sentences) for the overall set",
+            "- Narrative: how the set of commits fits together",
+            "- Key changes by theme (bulleted)",
+            "- Risks across the set",
+            "- Tests to add or update covering the whole change",
+            "",
+            "Per-commit summaries:",
+            joined_summaries,
+        ]
+    )
+    response = generate_text(final_prompt, max_tokens=1400, temperature=0.2)
     box = ui_utils.format_box(
         title="Chacha — Cohesive Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commits: {len(shas)} (ending at {shas[-1][:12]})",

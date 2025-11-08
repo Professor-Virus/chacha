@@ -258,9 +258,20 @@ def generate_text(prompt: str, *, max_tokens: int = 2000, temperature: float = 0
                     if isinstance(content_obj, dict):
                         parts = content_obj.get("parts")
                         if isinstance(parts, list) and parts:
-                            part0 = parts[0]
-                            if isinstance(part0, dict) and "text" in part0:
-                                return str(part0["text"]) or ""
+                            # concatenate all text parts if present
+                            texts: list[str] = []
+                            for part in parts:
+                                if isinstance(part, dict) and "text" in part:
+                                    txt = str(part["text"] or "")
+                                    if txt:
+                                        texts.append(txt)
+                            if texts:
+                                return "\n".join(texts)
+                    # Fallback: surface finish/safety info if no text
+                    finish = first.get("finishReason")
+                    safety = first.get("safetyRatings")
+                    if finish or safety:
+                        return f"⚠️ Gemini returned no text. Info: finish={finish}, safety={safety}"
         return "⚠️ No response from Gemini."
 
     return "⚠️ Unsupported provider."
