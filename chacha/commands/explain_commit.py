@@ -17,10 +17,24 @@ from chacha.utils.git_utils import (
     get_commit_files_changed,
     get_commit_stats,
     get_commit_patch,
+    get_commit_parents,
+    get_empty_tree_sha,
+    get_cumulative_diff_patch,
+    get_cumulative_diff_shortstat,
+    get_cumulative_diff_numstat,
 )
 
 
-app = typer.Typer(invoke_without_command=True, help="Explain one commit by default, or N cohesively via -c/--cohesive.\nTip: To pass a negative target (e.g., -2), either use `--` before it (e.g., `chacha explain commit -- -2`) or pass via `--spec -2`.")
+app = typer.Typer(
+    invoke_without_command=True,
+    help=(
+        "Two modes:\n"
+        "- Single commit: chacha explain commit [TARGET] or --spec <ref>\n"
+        "- Cohesive N commits (anchored to HEAD): chacha explain commit -c N\n"
+        "Do NOT combine --cohesive with TARGET/--spec.\n"
+        "Tip: For negative TARGET (e.g., -2), use `--` (e.g., `... -- -2`) or `--spec -2`."
+    ),
+)
 
 
 @app.callback()
@@ -38,7 +52,7 @@ def main(
         None,
         "--cohesive",
         "-c",
-        help="Explain last N commits cohesively (combined narrative). If TARGET is provided, uses TARGET as the anchor (inclusive).",
+        help="Explain last N commits cohesively (combined narrative), anchored to HEAD. Do not combine with TARGET/--spec.",
     ),
 ) -> None:
     """Explain one commit by default, or N commits cohesively with -c/--cohesive."""
@@ -51,11 +65,14 @@ def main(
         typer.echo("❌ --cohesive must be a positive integer.", err=True)
         raise typer.Exit(code=1)
 
-    effective_target = spec if spec is not None else target
-
     if cohesive:
-        explain_commits_cohesively(effective_target, cohesive, provider)
+        # Enforce mutually exclusive modes: cohesive ignores TARGET/--spec
+        if target is not None or spec is not None:
+            typer.echo("❌ Do not combine --cohesive with TARGET/--spec. Use one mode at a time.", err=True)
+            raise typer.Exit(code=2)
+        explain_commits_cohesively(None, cohesive, provider)
     else:
+        effective_target = spec if spec is not None else target
         explain_single_commit(effective_target, provider)
 
 
@@ -157,30 +174,96 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
 
     # Oldest -> newest for narrative
     shas = list(reversed(newest_to_oldest))
+    oldest_sha = shas[0]
 
-    # Build a concise, deterministic bullet summary without calling the LLM
+    # Compute base for cumulative diff: parent of oldest, else empty tree (for root)
+    parents = get_commit_parents(oldest_sha)
+    base = parents[0] if parents else get_empty_tree_sha()
+
+    # Context: subjects for narrative
     subjects = [get_commit_subject(sha) for sha in shas]
-    tldr_subjects = "; ".join(subjects[:4]) + ("; …" if len(subjects) > 4 else "")
-    lines: List[str] = []
-    lines.append(f"TL;DR: {len(shas)} commits — {tldr_subjects}")
-    lines.append("")
-    lines.append("Key changes:")
-    for i, sha in enumerate(shas, start=1):
-        subject = subjects[i - 1]
-        files = get_commit_files_changed(sha)
-        lines.append(f"- {i}/{len(shas)} {sha[:12]} — {subject} ({len(files)} files)")
-        for f in files[:8]:
-            lines.append(f"  • {f}")
-        if len(files) > 8:
-            lines.append(f"  • … (+{len(files) - 8} more)")
-    lines.append("")
-    lines.append("Note: Cohesive view kept brief intentionally. Use single-commit for deeper diff context.")
+    subjects_bullets = "\n".join(f"- {i+1}/{len(shas)} {shas[i][:12]} — {subjects[i]}" for i in range(len(shas)))
 
-    content = "\n".join(lines)
+    # Cumulative stats
+    shortstat = get_cumulative_diff_shortstat(base, anchor_sha)
+    numstat_rows = get_cumulative_diff_numstat(base, anchor_sha)
+    # Rank files by total churn and keep top-K
+    top_k = 15
+    ranked = sorted(numstat_rows, key=lambda r: (r[0] + r[1]), reverse=True)
+    top_files = ranked[:top_k]
+    top_files_lines = [
+        f"- {adds + dels:>4} lines changed (+{adds}/-{dels})  {path}"
+        for adds, dels, path in top_files
+    ] or ["(no files)"]
+
+    # Cumulative diff (trimmed)
+    cumulative_patch = get_cumulative_diff_patch(base, anchor_sha, max_bytes=50_000)
+
+    prompt = "\n".join(
+        [
+            "You are a senior engineer. Explain these commits as a cohesive change set (<=350 words).",
+            "Focus on the overarching goal, how changes evolve across the set, and net outcomes.",
+            "",
+            f"Commit range: {base[:12]}..{anchor_sha[:12]}",
+            "",
+            "Commits (oldest → newest):",
+            subjects_bullets,
+            "",
+            "Cumulative shortstat:",
+            shortstat or "(none)",
+            "",
+            "Top changed files by churn:",
+            *top_files_lines,
+            "",
+            "Unified cumulative diff (trimmed):",
+            "```diff",
+            cumulative_patch or "(no patch)",
+            "```",
+            "",
+            "Please produce:",
+            "- TL;DR (1-2 sentences)",
+            "- Key changes by theme (bulleted)",
+            "- Risks and potential regressions",
+            "- Tests to add or update",
+        ]
+    )
+
+    response = generate_text(prompt, max_tokens=1100, temperature=0.2)
+    # Fallback: retry without the full diff if model still returns no text
+    if isinstance(response, str) and response.strip().startswith("⚠️"):
+        prompt_no_diff = "\n".join(
+            [
+                "Explain this cohesive set briefly (<=250 words).",
+                f"Commit range: {base[:12]}..{anchor_sha[:12]}",
+                "",
+                "Commits:",
+                subjects_bullets,
+                "",
+                "Cumulative shortstat:",
+                shortstat or "(none)",
+                "",
+                "Top changed files:",
+                *top_files_lines,
+            ]
+        )
+        response = generate_text(prompt_no_diff, max_tokens=600, temperature=0.2)
+
+    # Final fallback: deterministic bullet summary (no LLM)
+    if isinstance(response, str) and response.strip().startswith("⚠️"):
+        tldr_subjects = "; ".join(subjects[:4]) + ("; …" if len(subjects) > 4 else "")
+        lines: List[str] = []
+        lines.append(f"TL;DR: {len(shas)} commits — {tldr_subjects}")
+        lines.append("")
+        lines.append("Key changes (top files):")
+        lines.extend(top_files_lines)
+        lines.append("")
+        lines.append("Note: Cohesive LLM summary unavailable due to model limits.")
+        response = "\n".join(lines)
+
     box = ui_utils.format_box(
         title="Chacha — Cohesive Commit Explanation",
-        subtitle=f"Provider: {provider}  •  Commits: {len(shas)} (ending at {shas[-1][:12]})",
-        content=content,
+        subtitle=f"Provider: {provider}  •  Commits: {len(shas)} (ending at {anchor_sha[:12]})",
+        content=response,
     )
     typer.echo(box)
 
