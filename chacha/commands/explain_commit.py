@@ -227,24 +227,15 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
             joined_summaries,
         ]
     )
-    response = generate_text(final_prompt, max_tokens=600, temperature=0.2)
+    response = generate_text(final_prompt, max_tokens=800, temperature=0.2)
     # Fallback: if still no text, emit a minimal cohesive summary locally
     if isinstance(response, str) and response.strip().startswith("⚠️"):
-        subjects = []
-        for i, sha in enumerate(shas, start=1):
-            subjects.append(f"{i}. {get_commit_subject(sha)}")
-        minimal = "\n".join(
-            [
-                "TL;DR: Cohesive change across multiple commits. See key subjects below.",
-                "",
-                "Commit subjects:",
-                *subjects,
-                "",
-                "Potential risks: Review interfaces changed and cross-file refactors.",
-                "Tests to add/update: Cover primary code paths modified across commits.",
-            ]
-        )
-        response = minimal
+        header = [
+            "Overall cohesive narrative could not be generated due to model token limits.",
+            "Showing per-commit summaries instead:",
+            "",
+        ]
+        response = _truncate("\n".join(header) + joined_summaries, 8000)
     box = ui_utils.format_box(
         title="Chacha — Cohesive Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commits: {len(shas)} (ending at {shas[-1][:12]})",
