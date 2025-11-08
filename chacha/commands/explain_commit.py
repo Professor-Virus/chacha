@@ -58,6 +58,15 @@ def main(
     else:
         explain_single_commit(effective_target, provider)
 
+
+def _truncate(text: str, limit: int) -> str:
+    if not isinstance(text, str):
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
 def explain_single_commit(target: Optional[str], provider: str) -> None:
     commit_spec = target or "-1"
     sha = resolve_commit_sha(commit_spec)
@@ -111,12 +120,12 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     )
     prompt = "\n".join(prompt_parts)
 
-    response = generate_text(prompt, max_tokens=1600, temperature=0.2)
+    response = generate_text(prompt, max_tokens=1200, temperature=0.2)
     # Fallback if provider returned no text
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         compact = "\n".join(
             [
-                "Explain this commit succinctly (<=200 words).",
+                "Explain this commit succinctly (<=180 words).",
                 f"SHA: {sha}",
                 f"Subject: {subject}",
                 "Files:",
@@ -125,7 +134,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
                 stats or "(no stats)",
             ]
         )
-        response = generate_text(compact, max_tokens=800, temperature=0.2)
+        response = generate_text(compact, max_tokens=500, temperature=0.2)
     box = ui_utils.format_box(
         title="Chacha — Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commit: {sha[:12]}",
@@ -183,11 +192,11 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 "- Tests:",
             ]
         )
-        summary = generate_text(commit_prompt, max_tokens=600, temperature=0.2)
+        summary = generate_text(commit_prompt, max_tokens=500, temperature=0.2)
         if isinstance(summary, str) and summary.strip().startswith("⚠️"):
             compact_commit_prompt = "\n".join(
                 [
-                    "Summarize this commit briefly (<=120 words):",
+                    "Summarize this commit briefly (<=100 words):",
                     f"SHA: {sha}",
                     f"Subject: {subject}",
                     "Files:",
@@ -196,14 +205,15 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                     stats or "(no stats)",
                 ]
             )
-            summary = generate_text(compact_commit_prompt, max_tokens=300, temperature=0.2)
-        per_commit_summaries.append(f"Commit {i}/{len(shas)} {sha[:12]} — {subject}\n{summary}")
+            summary = generate_text(compact_commit_prompt, max_tokens=240, temperature=0.2)
+        # Keep each per-commit summary short to avoid MAX_TOKENS in the final pass
+        per_commit_summaries.append(f"Commit {i}/{len(shas)} {sha[:12]} — {subject}\n{_truncate(summary, 600)}")
 
     # Step 2: Produce a cohesive narrative from the per-commit summaries
     joined_summaries = "\n\n---\n\n".join(per_commit_summaries)
     final_prompt = "\n".join(
         [
-            "You are a senior engineer. Explain these commits as a cohesive change set (<=400 words).",
+            "You are a senior engineer. Explain these commits as a cohesive change set (<=350 words).",
             "Focus on the overarching goal, how changes evolve commit-to-commit, and cumulative impact.",
             "",
             "Please produce:",
@@ -217,7 +227,24 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
             joined_summaries,
         ]
     )
-    response = generate_text(final_prompt, max_tokens=1400, temperature=0.2)
+    response = generate_text(final_prompt, max_tokens=600, temperature=0.2)
+    # Fallback: if still no text, emit a minimal cohesive summary locally
+    if isinstance(response, str) and response.strip().startswith("⚠️"):
+        subjects = []
+        for i, sha in enumerate(shas, start=1):
+            subjects.append(f"{i}. {get_commit_subject(sha)}")
+        minimal = "\n".join(
+            [
+                "TL;DR: Cohesive change across multiple commits. See key subjects below.",
+                "",
+                "Commit subjects:",
+                *subjects,
+                "",
+                "Potential risks: Review interfaces changed and cross-file refactors.",
+                "Tests to add/update: Cover primary code paths modified across commits.",
+            ]
+        )
+        response = minimal
     box = ui_utils.format_box(
         title="Chacha — Cohesive Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commits: {len(shas)} (ending at {shas[-1][:12]})",
