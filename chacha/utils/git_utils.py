@@ -119,3 +119,56 @@ def get_commit_patch(sha: str, max_bytes: int = 200_000) -> str:
     return patch
 
 
+def get_commit_parents(sha: str) -> list[str]:
+    """Return parent SHAs for a commit (may be empty for root)."""
+    out = _run_git(["show", "-s", "--pretty=%P", sha])
+    parts = (out or "").split()
+    return [p for p in parts if p]
+
+
+def get_empty_tree_sha() -> str:
+    """Return the SHA of the empty tree object."""
+    sha = _run_git(["hash-object", "-t", "tree", "/dev/null"])
+    # Fallback to the well-known empty tree SHA if command fails
+    return sha or "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def get_cumulative_diff_patch(base: str, anchor: str, max_bytes: int = 120_000) -> str:
+    """Return unified diff for the range base..anchor with rename/copy detection."""
+    patch = _run_git(
+        ["diff", "--patch", "--find-renames", "--find-copies", f"{base}..{anchor}"]
+    )
+    if not patch:
+        return ""
+    if len(patch) > max_bytes:
+        head = patch[: max_bytes - 200]
+        tail_note = f"\n\n--- [Cumulative diff truncated to {max_bytes} bytes] ---"
+        return head + tail_note
+    return patch
+
+
+def get_cumulative_diff_shortstat(base: str, anchor: str) -> str:
+    """Return shortstat summary (files changed, insertions, deletions) for base..anchor."""
+    return _run_git(["diff", "--shortstat", f"{base}..{anchor}"]) or ""
+
+
+def get_cumulative_diff_numstat(base: str, anchor: str) -> list[tuple[int, int, str]]:
+    """Return per-file added/deleted counts for base..anchor."""
+    out = _run_git(["diff", "--numstat", f"{base}..{anchor}"])
+    rows: list[tuple[int, int, str]] = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        adds_s, dels_s, path = parts
+        try:
+            adds = int(adds_s) if adds_s.isdigit() else 0
+        except Exception:
+            adds = 0
+        try:
+            dels = int(dels_s) if dels_s.isdigit() else 0
+        except Exception:
+            dels = 0
+        rows.append((adds, dels, path))
+    return rows
+
