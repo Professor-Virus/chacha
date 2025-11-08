@@ -5,9 +5,12 @@ from __future__ import annotations
 import typer
 
 from chacha.utils.ai_utils import explain_file
+from . import explain_commit
 
 
 app = typer.Typer()
+
+app.add_typer(explain_commit.app, name="commit")
 
 
 @app.command()
