@@ -71,7 +71,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     body = get_commit_body(sha)
     files = get_commit_files_changed(sha)
     stats = get_commit_stats(sha)
-    patch = get_commit_patch(sha, max_bytes=80_000)
+    patch = get_commit_patch(sha, max_bytes=30_000)
 
     files_preview = "\n".join(f"- {f}" for f in files[:50])
     if len(files) > 50:
@@ -80,7 +80,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     prompt_parts: List[str] = [
         "You are a senior engineer. Explain this Git commit for a code review summary.",
         "",
-        "Please produce:",
+        "Please produce (keep under ~400 words):",
         "- TL;DR (1-2 sentences)",
         "- Key changes (bulleted)",
         "- Potential risks or regressions",
@@ -103,7 +103,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
             "Stats:",
             stats or "(no stats)",
             "",
-            "Unified Diff (may be truncated):",
+            "Unified Diff (trimmed, may be truncated):",
             "```diff",
             patch or "(no patch)",
             "```",
@@ -116,7 +116,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         compact = "\n".join(
             [
-                "Explain this commit succinctly.",
+                "Explain this commit succinctly (<=200 words).",
                 f"SHA: {sha}",
                 f"Subject: {subject}",
                 "Files:",
@@ -150,7 +150,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
     shas = list(reversed(newest_to_oldest))
 
     # Step 1: Summarize each commit individually with small diff budget
-    per_commit_patch_budget = 12_000
+    per_commit_patch_budget = 10_000
     per_commit_summaries: List[str] = []
     for i, sha in enumerate(shas, start=1):
         subject = get_commit_subject(sha)
@@ -162,7 +162,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         files_preview = "\n".join(f"- {f}" for f in files[:30])
         commit_prompt = "\n".join(
             [
-                "Summarize this commit for a code review:",
+                "Summarize this commit for a code review (<=200 words):",
                 f"- SHA: {sha}",
                 f"- Subject: {subject}",
                 f"- Author: {author}",
@@ -187,7 +187,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         if isinstance(summary, str) and summary.strip().startswith("⚠️"):
             compact_commit_prompt = "\n".join(
                 [
-                    "Summarize this commit briefly:",
+                    "Summarize this commit briefly (<=120 words):",
                     f"SHA: {sha}",
                     f"Subject: {subject}",
                     "Files:",
@@ -203,7 +203,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
     joined_summaries = "\n\n---\n\n".join(per_commit_summaries)
     final_prompt = "\n".join(
         [
-            "You are a senior engineer. Explain these commits as a cohesive change set.",
+            "You are a senior engineer. Explain these commits as a cohesive change set (<=400 words).",
             "Focus on the overarching goal, how changes evolve commit-to-commit, and cumulative impact.",
             "",
             "Please produce:",
