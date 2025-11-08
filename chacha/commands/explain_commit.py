@@ -20,7 +20,7 @@ from chacha.utils.git_utils import (
 )
 
 
-app = typer.Typer(invoke_without_command=True, help="Explain one commit by default, or N cohesively via -c/--cohesive.")
+app = typer.Typer(invoke_without_command=True, help="Explain one commit by default, or N cohesively via -c/--cohesive.\nTip: To pass a negative target (e.g., -2), either use `--` before it (e.g., `chacha explain commit -- -2`) or pass via `--spec -2`.")
 
 
 @app.callback()
@@ -28,6 +28,11 @@ def main(
     target: Optional[str] = typer.Argument(
         None,
         help="Commit ref, hash, or negative index (e.g., -1 for HEAD, -2 for previous).",
+    ),
+    spec: Optional[str] = typer.Option(
+        None,
+        "--spec",
+        help="Commit ref, hash, or negative index explicitly as an option (useful for negative values without `--`).",
     ),
     cohesive: Optional[int] = typer.Option(
         None,
@@ -46,10 +51,12 @@ def main(
         typer.echo("❌ --cohesive must be a positive integer.", err=True)
         raise typer.Exit(code=1)
 
+    effective_target = spec if spec is not None else target
+
     if cohesive:
-        explain_commits_cohesively(target, cohesive, provider)
+        explain_commits_cohesively(effective_target, cohesive, provider)
     else:
-        explain_single_commit(target, provider)
+        explain_single_commit(effective_target, provider)
 
 def explain_single_commit(target: Optional[str], provider: str) -> None:
     commit_spec = target or "-1"
