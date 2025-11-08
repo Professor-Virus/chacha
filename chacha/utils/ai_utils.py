@@ -191,3 +191,78 @@ def _explain_with_gemini(content: str) -> str:
     return "⚠️ No explanation received from Gemini."
 
 
+def generate_text(prompt: str, *, max_tokens: int = 2000, temperature: float = 0.2) -> str:
+    """Send an arbitrary prompt to the active provider and return text."""
+    provider = get_provider()
+    if provider == PROVIDER_ANTHROPIC:
+        api_key = get_api_key(PROVIDER_ANTHROPIC)
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "content-type": "application/json",
+            },
+            json={
+                "model": os.getenv("CHACHA_ANTHROPIC_MODEL") or "claude-3-sonnet-20240229",
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+            },
+            timeout=60,
+        )
+        data = response.json()
+        if isinstance(data, dict) and data.get("content"):
+            first = data["content"][0]
+            if isinstance(first, dict) and "text" in first:
+                return first["text"]
+        # Surface status or minimal info
+        return "⚠️ No response from Anthropic."
+
+    if provider == PROVIDER_GEMINI:
+        api_key = get_api_key(PROVIDER_GEMINI)
+        model = os.getenv("CHACHA_GEMINI_MODEL") or "gemini-2.5-flash"
+        api_version = os.getenv("CHACHA_GEMINI_API_VERSION") or "v1beta"
+        url = (
+            f"https://generativelanguage.googleapis.com/{api_version}/models/"
+            f"{model}:generateContent?key={api_key}"
+        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+            },
+        }
+        response = requests.post(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=60,
+        )
+        if response.status_code != 200:
+            try:
+                err = response.json()
+                if isinstance(err, dict) and "error" in err:
+                    msg = err.get("error", {}).get("message") or str(err)
+                    return f"⚠️ Gemini error ({response.status_code}): {msg}"
+                return f"⚠️ Gemini HTTP {response.status_code}: {response.text[:500]}"
+            except Exception:
+                return f"⚠️ Gemini HTTP {response.status_code}: {response.text[:500]}"
+        data = response.json()
+        if isinstance(data, dict):
+            candidates = data.get("candidates")
+            if isinstance(candidates, list) and candidates:
+                first = candidates[0]
+                if isinstance(first, dict):
+                    content_obj = first.get("content")
+                    if isinstance(content_obj, dict):
+                        parts = content_obj.get("parts")
+                        if isinstance(parts, list) and parts:
+                            part0 = parts[0]
+                            if isinstance(part0, dict) and "text" in part0:
+                                return str(part0["text"]) or ""
+        return "⚠️ No response from Gemini."
+
+    return "⚠️ Unsupported provider."
+
+
