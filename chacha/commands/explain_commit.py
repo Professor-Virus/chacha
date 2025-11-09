@@ -577,6 +577,13 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         response = "\n".join(lines)
 
     response = _sanitize_to_plain_bullets(response, max_lines=36)
+    # Prepend a non-LLM "Changed files" section sourced from git
+    if top_files:
+        changed_files_header = f"- Changed files (top {len(top_files)}):"
+        changed_files_block = "\n".join([changed_files_header, *top_files_lines])
+    else:
+        changed_files_block = "- Changed files: (none)"
+    response = changed_files_block + "\n\n" + response
     box = ui_utils.format_box(
         title="Chacha — Cohesive Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commits: {count} (range {base_sha[:12]}..{anchor_sha[:12]})",
