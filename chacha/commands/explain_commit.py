@@ -83,6 +83,13 @@ def _truncate(text: str, limit: int) -> str:
         return text
     return text[: max(0, limit - 1)].rstrip() + "…"
 
+def _truncate_words(text: str, max_words: int) -> str:
+    if not isinstance(text, str):
+        return ""
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words]) + " …"
 
 def explain_single_commit(target: Optional[str], provider: str) -> None:
     commit_spec = target or "-1"
@@ -106,7 +113,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     prompt_parts: List[str] = [
         "You are a senior engineer. Explain this Git commit for a code review summary.",
         "",
-        "Please produce (keep under ~400 words):",
+        "Please produce (<=500 words):",
         "- TL;DR (1-2 sentences)",
         "- Key changes (bulleted)",
         "- Potential risks or regressions",
@@ -152,6 +159,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
             ]
         )
         response = generate_text(compact, max_tokens=800, temperature=0.2)
+    response = _truncate_words(response, 500)
     box = ui_utils.format_box(
         title="Chacha — Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commit: {sha[:12]}",
@@ -197,7 +205,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
 
     prompt = "\n".join(
         [
-            "You are a senior engineer. Explain these commits as a cohesive change set (<=350 words).",
+            "You are a senior engineer. Explain these commits as a cohesive change set (<=500 words).",
             "Focus on the overarching goal, how changes evolve across the set, and net outcomes.",
             "",
             f"Commit range: {base_sha[:12]}..{anchor_sha[:12]} (last {count} commits)",
@@ -252,6 +260,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         lines.append("Note: Cohesive LLM summary unavailable due to model limits.")
         response = "\n".join(lines)
 
+    response = _truncate_words(response, 500)
     box = ui_utils.format_box(
         title="Chacha — Cohesive Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commits: {count} (range {base_sha[:12]}..{anchor_sha[:12]})",
