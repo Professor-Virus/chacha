@@ -1,4 +1,4 @@
-"""Chacha CLI entrypoint (Typer-based)."""
+"""Chacha CLI tool"""
 
 from __future__ import annotations
 
