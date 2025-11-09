@@ -95,7 +95,7 @@ def get_staged_files() -> list[str]:
 #     return files
 
 
-def stage_files() -> tuple[bool, str]:
+def stage_files(files: list[str] | None = None) -> tuple[bool, str]:
     """Stage the given files.
     
     Args:
@@ -105,7 +105,8 @@ def stage_files() -> tuple[bool, str]:
         Tuple of (success: bool, error_message: str)
         If successful, error_message will be empty
     """
-    files = get_changed_files()
+    if files is None:
+        files = get_changed_files()
     if not files:
         return True, ""
     
@@ -120,6 +121,39 @@ def stage_files() -> tuple[bool, str]:
     else:
         error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
         return False, error_msg
+
+
+def commit_and_push(branch_name: str, commit_message: str) -> tuple[bool, str]:
+    """Commit staged changes and push to the specified remote branch."""
+    commit_result = subprocess.run(
+        ["git", "commit", "-m", commit_message],
+        capture_output=True,
+        text=True,
+    )
+    if commit_result.returncode != 0:
+        error_msg = commit_result.stderr.strip() or commit_result.stdout.strip() or "Failed to commit changes"
+        return False, error_msg
+
+    push_result = subprocess.run(
+        ["git", "push", "origin", branch_name],
+        capture_output=True,
+        text=True,
+    )
+    if push_result.returncode != 0:
+        error_msg = push_result.stderr.strip() or push_result.stdout.strip() or "Failed to push changes"
+        return False, error_msg
+
+    return True, ""
+
+
+def get_upstream_branch() -> str:
+    """Return the current upstream branch name without remote prefix, or empty string."""
+    upstream = _run_git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    if not upstream:
+        return ""
+    if "/" in upstream:
+        return upstream.split("/", 1)[1]
+    return upstream
 
 
 def get_upstream_and_remote_branches() -> list[str]:
