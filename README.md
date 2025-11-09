@@ -1,104 +1,89 @@
-# Chacha CLI - 0.1
+# Chacha CLI
 
-Chacha is a lightweight CLI toolkit providing developer helpers:
-- explain: placeholder for code explanations
-- fix: placeholder for automated fixes
-- explain-commit: placeholder for explaining commits
-- commit: placeholder for smart commit workflows
+Chacha is a productivity-first developer assistant for your terminal. It wraps common Git and AI-assisted workflows behind a single CLI so you can review changes, craft commits, and explain code without leaving your shell.
+
+## Key Features
+
+- **Smart commits** – stage files interactively (Questionary) or all at once, auto-generate a commit message, confirm the branch, and push in one go.
+- **Explain code** – send source or PDFs to your configured AI provider and get a concise explanation back.
+- **Fix suggestions** – experiment with AI-generated refactors or fixes for a given file.
+- **Explain commit history** – summarize the latest commit by feeding the message and diff to the AI.
+- **Branch insights (planned)** – Rich-powered dashboard to inspect remote branches, latest commit metadata, and divergence status.
 
 ## Installation
 
-### For Local Development (Recommended)
+### Local development
 
-If you're developing locally and want to test changes immediately:
+Use `pipx` to install from your working tree and pick up changes quickly:
 
 ```bash
-# First time
+# first install
 pipx install .
 
-# After making changes, reinstall
+# reinstall after edits
 pipx reinstall .
 
-# If no changes show after reinstalling, run
-
-pipx uninstall chacha-cli && pipx install .
+# if changes fail to appear
+pipx uninstall chacha-cli
+pipx install .
 ```
 
-This installs from your local directory and picks up your changes immediately.
+### From GitHub
 
-### From GitHub (Production/Shared)
-
-To install from the GitHub repository:
+Install the published CLI straight from the repository:
 
 ```bash
-# Install from main branch
+# latest main
 pipx install --spec git+https://github.com/Professor-Virus/chacha.git@main chacha-cli
 
-# Install from a specific branch
-pipx install --spec git+https://github.com/Professor-Virus/chacha.git@branch-name chacha-cli
+# specific branch
+pipx install --spec git+https://github.com/Professor-Virus/chacha.git@feature/my-branch chacha-cli
 
-# To reinstall/update from GitHub
+# update
 pipx uninstall chacha-cli
-pipx install --spec git+https://github.com/Professor-Virus/chacha.git@branch-name chacha-cli
+pipx install --spec git+https://github.com/Professor-Virus/chacha.git@main chacha-cli
 ```
 
-**Note:** Installing from GitHub requires you to push your changes first. For local development, use `pipx install .` instead.
+> GitHub installs require your changes to be pushed. For local experimentation prefer `pipx install .`.
 
-## Usage
+## Usage Overview
 
 ```bash
-chacha --help
-chacha explain --help
-chacha fix --help
-chacha explain-commit --help
-chacha commit --help
+chacha --help              # global help and options
+chacha commit --help       # smart commit workflow
+chacha explain PATH        # explain a file or PDF
+chacha fix PATH            # request AI-driven improvements
+chacha explain-commit      # summarize the latest commit
 ```
 
-## Development
+### Smart commit workflow
 
+1. `chacha run commit`  
+   - Presents a multi-select list of changed files (Questionary).  
+   - Shows a generated commit message, the target branch, and asks for confirmation.  
+   - On approval, commits and pushes to the current or specified branch.
 
-1. explain
-Input: file path (Python, JS, PDF)
-Flow:
-Read file content
-If PDF → extract text (PyPDF2)
-Send content to configured AI provider (Anthropic Claude or Google Gemini)
-Print result in formatted output
-File: commands/explain.py
-Depends on: utils/ai_utils.py and utils/file_utils.py
+2. `chacha run commit --auto`  
+   - Stages every changed file without prompting before generating the commit message.
 
-2. fix
-Input: file path
-Flow:
-Read code
-Send to Claude with “Suggest fixes/improvements” prompt
-Display diff-like output (optional)
-Later: add “apply fix” option (rewrite file)
+Both flows rely on `git_utils` helpers for staging, diff collection, commit creation, and pushing.
 
-3. explain-commit
-Flow:
-Use GitPython to get last commit message and diff
-Send both to Claude
-Display summary or “story of the commit”
+### Explain & fix commands
 
+- `explain` reads the given file, delegates to the configured AI provider, and prints the response with minimal formatting.
+- `fix` (experimental) sends the file to the AI with “suggest improvements” prompting. Apply suggestions manually for now.
+- `explain-commit` grabs the latest commit diff/message and asks the AI to narrate the change.
 
+## Configuration
 
-- Python >= 3.9
-- No required third-party dependencies by default
+Chacha detects which AI provider to use based on environment variables:
 
-## Environment
-
-Set one of the supported providers and its API key. You can export these in your shell profile or place them in a `.env` file in the directory where you run the command.
-
-Provider selection (any one of these works):
-
-- Explicitly choose a provider:
-  - `CHACHA_PROVIDER=anthropic` with `CLAUDE_API_KEY=...`
-  - `CHACHA_PROVIDER=gemini` with `GEMINI_API_KEY=...` (or `GOOGLE_API_KEY=...`)
-
-- Auto-detection (no `CHACHA_PROVIDER`):
-  - If `CLAUDE_API_KEY` is set → uses Anthropic
-  - Else if `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set → uses Gemini
+- Explicit selection  
+  - `CHACHA_PROVIDER=anthropic` with `CLAUDE_API_KEY`
+  - `CHACHA_PROVIDER=gemini` with `GEMINI_API_KEY` (or `GOOGLE_API_KEY`)
+- Auto-detection (no `CHACHA_PROVIDER`)  
+  - `CLAUDE_API_KEY` present → uses Anthropic  
+  - Otherwise falls back to Gemini if `GEMINI_API_KEY` or `GOOGLE_API_KEY` is present
 
 Examples:
 
@@ -111,6 +96,14 @@ export CLAUDE_API_KEY=sk-ant-...
 export CHACHA_PROVIDER=gemini
 export GEMINI_API_KEY=AIza...
 ```
+
+The CLI requires Python 3.9+ and keeps third-party dependencies minimal.
+
+## Roadmap Ideas
+
+- Rich-based branch monitor with live status and interactive checkouts (using Questionary prompts for actions).
+- AI-assisted “apply fix” flow that writes changes directly to files.
+- Template-driven commit messages for conventional commits.
 
 ## License
 
