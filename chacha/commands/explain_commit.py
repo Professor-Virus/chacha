@@ -263,7 +263,8 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
             ]
         )
 
-    response = generate_text(prompt, max_tokens=1800, temperature=0.0)
+    with ui_utils.spinner("explain "):
+        response = generate_text(prompt, max_tokens=1800, temperature=0.0)
     # Fallback if provider returned no text
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         compact = "\n".join(
@@ -277,7 +278,8 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
                 stats or "(no stats)",
             ]
         )
-        response = generate_text(compact, max_tokens=700, temperature=0.0)
+        with ui_utils.spinner("explain "):
+            response = generate_text(compact, max_tokens=700, temperature=0.0)
     response = _sanitize_to_plain_bullets(response, max_lines=28)
     box = ui_utils.format_box(
         title="Chacha — Commit Explanation",
@@ -547,7 +549,8 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 "- Tests to add or update",
             ]
         )
-    response = generate_text(prompt, max_tokens=1400, temperature=0.0)
+    with ui_utils.spinner("explain "):
+        response = generate_text(prompt, max_tokens=1400, temperature=0.0)
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         prompt_no_diff = "\n".join(
             [
@@ -564,7 +567,8 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 *top_files_lines,
             ]
         )
-        response = generate_text(prompt_no_diff, max_tokens=800, temperature=0.0)
+        with ui_utils.spinner("explain "):
+            response = generate_text(prompt_no_diff, max_tokens=800, temperature=0.0)
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         tldr_subjects = "; ".join(subjects[:4]) + ("; …" if len(subjects) > 4 else "")
         lines: List[str] = []
