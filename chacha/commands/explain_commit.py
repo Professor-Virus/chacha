@@ -178,82 +178,55 @@ def _extract_top_hunks(diff_chunk: str, max_hunks: int = 2, max_lines_per_hunk: 
     return "\n".join(selected)
 
 def explain_single_commit(target: Optional[str], provider: str) -> None:
-    commit_spec = target or "-1"
-    sha = resolve_commit_sha(commit_spec)
-    if not sha:
-        typer.echo(f"❌ Could not resolve commit: {commit_spec}", err=True)
-        raise typer.Exit(code=1)
+    # Start spinner immediately
+    _sp = ui_utils.spinner("explain ", progress=True)
+    _sp.__enter__()
+    box: str = ""
+    try:
+        commit_spec = target or "-1"
+        sha = resolve_commit_sha(commit_spec)
+        if not sha:
+            typer.echo(f"❌ Could not resolve commit: {commit_spec}", err=True)
+            raise typer.Exit(code=1)
 
-    subject = get_commit_subject(sha)
-    author = get_commit_author(sha)
-    date = get_commit_date(sha)
-    body = get_commit_body(sha)
-    files = get_commit_files_changed(sha)
-    stats = get_commit_stats(sha)
-    # Keep patch smaller to reduce prompt bloat; we will also trim to top hunks
-    raw_patch = get_commit_patch(sha, max_bytes=40_000)
-    trimmed_patch = _extract_top_hunks(raw_patch, max_hunks=3, max_lines_per_hunk=60)
+        subject = get_commit_subject(sha)
+        author = get_commit_author(sha)
+        date = get_commit_date(sha)
+        body = get_commit_body(sha)
+        files = get_commit_files_changed(sha)
+        stats = get_commit_stats(sha)
+        # Keep patch smaller to reduce prompt bloat; we will also trim to top hunks
+        raw_patch = get_commit_patch(sha, max_bytes=40_000)
+        trimmed_patch = _extract_top_hunks(raw_patch, max_hunks=3, max_lines_per_hunk=60)
 
-    files_preview = "\n".join(f"- {f}" for f in files[:50])
-    if len(files) > 50:
-        files_preview += f"\n… (+{len(files) - 50} more)"
+        files_preview = "\n".join(f"- {f}" for f in files[:50])
+        if len(files) > 50:
+            files_preview += f"\n… (+{len(files) - 50} more)"
 
-    prompt_parts: List[str] = [
-        "You are a senior engineer. Explain this Git commit for a code review summary.",
-        "",
-        "Output format requirements:",
-        "- Plain text only with simple '-' bullets",
-        "- No markdown (no bold, headers, tables, code fences)",
-        "- Be concise (<=200 words total)",
-        "",
-        "Please produce bullets for:",
-        "- TL;DR",
-        "- Key changes",
-        "- Potential risks or regressions",
-        "- Tests to add or update",
-        "",
-        "Commit Metadata:",
-        f"- SHA: {sha}",
-        f"- Author: {author}",
-        f"- Date: {date}",
-        f"- Subject: {subject}",
-    ]
-    if body.strip():
-        prompt_parts.extend(["- Body:", body.strip()])
-    prompt_parts.extend(
-        [
+        prompt_parts: List[str] = [
+            "You are a senior engineer. Explain this Git commit for a code review summary.",
             "",
-            "Files Changed:",
-            files_preview or "(none listed)",
+            "Output format requirements:",
+            "- Plain text only with simple '-' bullets",
+            "- No markdown (no bold, headers, tables, code fences)",
+            "- Be concise (<=200 words total)",
             "",
-            "Stats:",
-            stats or "(no stats)",
+            "Please produce bullets for:",
+            "- TL;DR",
+            "- Key changes",
+            "- Potential risks or regressions",
+            "- Tests to add or update",
+            "",
+            "Commit Metadata:",
+            f"- SHA: {sha}",
+            f"- Author: {author}",
+            f"- Date: {date}",
+            f"- Subject: {subject}",
         ]
-    )
-    prompt = "\n".join(prompt_parts)
-    # Ensure prompt stays under budget by dropping the diff if necessary
-    if _estimate_tokens(prompt) > MAX_PROMPT_TOKENS:
-        prompt = "\n".join(
+        if body.strip():
+            prompt_parts.extend(["- Body:", body.strip()])
+        prompt_parts.extend(
             [
-                "You are a senior engineer. Explain this Git commit for a code review summary.",
-                "",
-                "Output format requirements:",
-                "- Plain text only with simple '-' bullets",
-                "- No markdown (no bold, headers, tables, code fences)",
-                "- Be concise (<=180 words total)",
-                "",
-                "Please produce bullets for:",
-                "- TL;DR",
-                "- Key changes",
-                "- Potential risks or regressions",
-                "- Tests to add or update",
-                "",
-                "Commit Metadata:",
-                f"- SHA: {sha}",
-                f"- Author: {author}",
-                f"- Date: {date}",
-                f"- Subject: {subject}",
-                *(["- Body:", _truncate_words(body.strip(), 120)] if body.strip() else []),
                 "",
                 "Files Changed:",
                 files_preview or "(none listed)",
@@ -262,31 +235,65 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
                 stats or "(no stats)",
             ]
         )
+        prompt = "\n".join(prompt_parts)
+        # Ensure prompt stays under budget by dropping the diff if necessary
+        if _estimate_tokens(prompt) > MAX_PROMPT_TOKENS:
+            prompt = "\n".join(
+                [
+                    "You are a senior engineer. Explain this Git commit for a code review summary.",
+                    "",
+                    "Output format requirements:",
+                    "- Plain text only with simple '-' bullets",
+                    "- No markdown (no bold, headers, tables, code fences)",
+                    "- Be concise (<=180 words total)",
+                    "",
+                    "Please produce bullets for:",
+                    "- TL;DR",
+                    "- Key changes",
+                    "- Potential risks or regressions",
+                    "- Tests to add or update",
+                    "",
+                    "Commit Metadata:",
+                    f"- SHA: {sha}",
+                    f"- Author: {author}",
+                    f"- Date: {date}",
+                    f"- Subject: {subject}",
+                    *(["- Body:", _truncate_words(body.strip(), 120)] if body.strip() else []),
+                    "",
+                    "Files Changed:",
+                    files_preview or "(none listed)",
+                    "",
+                    "Stats:",
+                    stats or "(no stats)",
+                ]
+            )
 
-    with ui_utils.spinner("explain "):
         response = generate_text(prompt, max_tokens=1800, temperature=0.0)
-    # Fallback if provider returned no text
-    if isinstance(response, str) and response.strip().startswith("⚠️"):
-        compact = "\n".join(
-            [
-                "Explain this commit succinctly as plain '-' bullets (<=160 words). No markdown.",
-                f"SHA: {sha}",
-                f"Subject: {subject}",
-                "Files:",
-                files_preview or "(none)",
-                "Stats:",
-                stats or "(no stats)",
-            ]
-        )
-        with ui_utils.spinner("explain "):
+        # Fallback if provider returned no text
+        if isinstance(response, str) and response.strip().startswith("⚠️"):
+            compact = "\n".join(
+                [
+                    "Explain this commit succinctly as plain '-' bullets (<=160 words). No markdown.",
+                    f"SHA: {sha}",
+                    f"Subject: {subject}",
+                    "Files:",
+                    files_preview or "(none)",
+                    "Stats:",
+                    stats or "(no stats)",
+                ]
+            )
             response = generate_text(compact, max_tokens=700, temperature=0.0)
-    response = _sanitize_to_plain_bullets(response, max_lines=28)
-    box = ui_utils.format_box(
-        title="Chacha — Commit Explanation",
-        subtitle=f"Provider: {provider}  •  Commit: {sha[:12]}",
-        content=response,
-    )
-    typer.echo(box)
+        response = _sanitize_to_plain_bullets(response, max_lines=28)
+        # Prepare box (print after stopping spinner)
+        box = ui_utils.format_box(
+            title="Chacha — Commit Explanation",
+            subtitle=f"Provider: {provider}  •  Commit: {sha[:12]}",
+            content=response,
+        )
+    finally:
+        _sp.__exit__(None, None, None)
+    if box:
+        typer.echo(box)
 
 
 def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider: str) -> None:
@@ -549,50 +556,57 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 "- Tests to add or update",
             ]
         )
-    with ui_utils.spinner("explain "):
+    # Start spinner early for cohesive flow
+    _sp2 = ui_utils.spinner("explain ", progress=True)
+    _sp2.__enter__()
+    box: str = ""
+    try:
         response = generate_text(prompt, max_tokens=1400, temperature=0.0)
-    if isinstance(response, str) and response.strip().startswith("⚠️"):
-        prompt_no_diff = "\n".join(
-            [
-                "Explain this cohesive set briefly as plain '-' bullets (<=220 words). No markdown.",
-                f"Commit range: {base_sha[:12]}..{anchor_sha[:12]} (last {count} commits)",
-                "",
-                "Commits:",
-                subjects_bullets,
-                "",
-                "Cumulative shortstat:",
-                shortstat or "(none)",
-                "",
-                "Top changed files:",
-                *top_files_lines,
-            ]
-        )
-        with ui_utils.spinner("explain "):
+        if isinstance(response, str) and response.strip().startswith("⚠️"):
+            prompt_no_diff = "\n".join(
+                [
+                    "Explain this cohesive set briefly as plain '-' bullets (<=220 words). No markdown.",
+                    f"Commit range: {base_sha[:12]}..{anchor_sha[:12]} (last {count} commits)",
+                    "",
+                    "Commits:",
+                    subjects_bullets,
+                    "",
+                    "Cumulative shortstat:",
+                    shortstat or "(none)",
+                    "",
+                    "Top changed files:",
+                    *top_files_lines,
+                ]
+            )
             response = generate_text(prompt_no_diff, max_tokens=800, temperature=0.0)
-    if isinstance(response, str) and response.strip().startswith("⚠️"):
-        tldr_subjects = "; ".join(subjects[:4]) + ("; …" if len(subjects) > 4 else "")
-        lines: List[str] = []
-        lines.append(f"TL;DR: {count} commits — {tldr_subjects}")
-        lines.append("")
-        lines.append("Key changes (top files):")
-        lines.extend(top_files_lines)
-        lines.append("")
-        lines.append("Note: Cohesive LLM summary unavailable; showing top changes instead.")
-        response = "\n".join(lines)
+        if isinstance(response, str) and response.strip().startswith("⚠️"):
+            tldr_subjects = "; ".join(subjects[:4]) + ("; …" if len(subjects) > 4 else "")
+            lines: List[str] = []
+            lines.append(f"TL;DR: {count} commits — {tldr_subjects}")
+            lines.append("")
+            lines.append("Key changes (top files):")
+            lines.extend(top_files_lines)
+            lines.append("")
+            lines.append("Note: Cohesive LLM summary unavailable; showing top changes instead.")
+            response = "\n".join(lines)
 
-    response = _sanitize_to_plain_bullets(response, max_lines=36)
-    # Prepend a non-LLM "Changed files" section sourced from git
-    if top_files:
-        changed_files_header = f"- Changed files (top {len(top_files)}):"
-        changed_files_block = "\n".join([changed_files_header, *top_files_lines])
-    else:
-        changed_files_block = "- Changed files: (none)"
-    response = changed_files_block + "\n\n" + response
-    box = ui_utils.format_box(
-        title="Chacha — Cohesive Commit Explanation",
-        subtitle=f"Provider: {provider}  •  Commits: {count} (range {base_sha[:12]}..{anchor_sha[:12]})",
-        content=response,
-    )
-    typer.echo(box)
+        response = _sanitize_to_plain_bullets(response, max_lines=36)
+        # Prepend a non-LLM "Changed files" section sourced from git
+        if top_files:
+            changed_files_header = f"- Changed files (top {len(top_files)}):"
+            changed_files_block = "\n".join([changed_files_header, *top_files_lines])
+        else:
+            changed_files_block = "- Changed files: (none)"
+        response = changed_files_block + "\n\n" + response
+        # Stop spinner before printing
+        box = ui_utils.format_box(
+            title="Chacha — Cohesive Commit Explanation",
+            subtitle=f"Provider: {provider}  •  Commits: {count} (range {base_sha[:12]}..{anchor_sha[:12]})",
+            content=response,
+        )
+    finally:
+        _sp2.__exit__(None, None, None)
+    if box:
+        typer.echo(box)
 
 
