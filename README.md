@@ -1,4 +1,4 @@
-# Chacha CLI
+# Chacha CLI - 0.1
 
 Chacha is a lightweight CLI toolkit providing developer helpers:
 - explain: placeholder for code explanations
