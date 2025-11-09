@@ -152,7 +152,9 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     body = get_commit_body(sha)
     files = get_commit_files_changed(sha)
     stats = get_commit_stats(sha)
-    patch = get_commit_patch(sha, max_bytes=80_000)
+    # Keep patch smaller to reduce prompt bloat; we will also trim to top hunks
+    raw_patch = get_commit_patch(sha, max_bytes=40_000)
+    trimmed_patch = _extract_top_hunks(raw_patch, max_hunks=3, max_lines_per_hunk=60)
 
     files_preview = "\n".join(f"- {f}" for f in files[:50])
     if len(files) > 50:
@@ -186,18 +188,44 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
             "",
             "Unified Diff (trimmed, may be truncated):",
             "```diff",
-            patch or "(no patch)",
+            _truncate(trimmed_patch, 3000) or "(no patch)",
             "```",
         ]
     )
     prompt = "\n".join(prompt_parts)
+    # Ensure prompt stays under budget by dropping the diff if necessary
+    if _estimate_tokens(prompt) > MAX_PROMPT_TOKENS:
+        prompt = "\n".join(
+            [
+                "You are a senior engineer. Explain this Git commit for a code review summary.",
+                "",
+                "Please produce (<=300 words):",
+                "- TL;DR (1-2 sentences)",
+                "- Key changes (bulleted)",
+                "- Potential risks or regressions",
+                "- Tests to add or update",
+                "",
+                "Commit Metadata:",
+                f"- SHA: {sha}",
+                f"- Author: {author}",
+                f"- Date: {date}",
+                f"- Subject: {subject}",
+                *(["- Body:", _truncate_words(body.strip(), 120)] if body.strip() else []),
+                "",
+                "Files Changed:",
+                files_preview or "(none listed)",
+                "",
+                "Stats:",
+                stats or "(no stats)",
+            ]
+        )
 
-    response = generate_text(prompt, max_tokens=1600, temperature=0.2)
+    response = generate_text(prompt, max_tokens=1800, temperature=0.0)
     # Fallback if provider returned no text
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         compact = "\n".join(
             [
-                "Explain this commit succinctly (<=200 words).",
+                "Explain this commit succinctly (<=180 words).",
                 f"SHA: {sha}",
                 f"Subject: {subject}",
                 "Files:",
@@ -206,7 +234,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
                 stats or "(no stats)",
             ]
         )
-        response = generate_text(compact, max_tokens=800, temperature=0.2)
+        response = generate_text(compact, max_tokens=700, temperature=0.0)
     response = _truncate_words(response, 500)
     box = ui_utils.format_box(
         title="Chacha — Commit Explanation",
@@ -473,7 +501,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 "- Tests to add or update",
             ]
         )
-    response = generate_text(prompt, max_tokens=1100, temperature=0.2)
+    response = generate_text(prompt, max_tokens=1400, temperature=0.0)
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         prompt_no_diff = "\n".join(
             [
@@ -490,7 +518,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 *top_files_lines,
             ]
         )
-        response = generate_text(prompt_no_diff, max_tokens=600, temperature=0.2)
+        response = generate_text(prompt_no_diff, max_tokens=800, temperature=0.0)
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         tldr_subjects = "; ".join(subjects[:4]) + ("; …" if len(subjects) > 4 else "")
         lines: List[str] = []
@@ -499,7 +527,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         lines.append("Key changes (top files):")
         lines.extend(top_files_lines)
         lines.append("")
-        lines.append("Note: Cohesive LLM summary unavailable due to model limits.")
+        lines.append("Note: Cohesive LLM summary unavailable; showing top changes instead.")
         response = "\n".join(lines)
 
     response = _truncate_words(response, 500)
