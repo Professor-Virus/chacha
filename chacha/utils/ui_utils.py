@@ -70,20 +70,53 @@ def format_box(title: str, content: str, subtitle: Optional[str] = None, width: 
 
 
 class _Spinner:
-    def __init__(self, message_prefix: str = "explain ", frames: Optional[list[str]] = None, interval: float = 0.1) -> None:
+    def __init__(
+        self,
+        message_prefix: str = "explain ",
+        frames: Optional[list[str]] = None,
+        interval: float = 0.1,
+        progress: bool = False,
+        bar_width: int = 20,
+    ) -> None:
         self.message_prefix = message_prefix
         self.frames = frames or ["-", "\\", "|", "/"]
         self.interval = max(0.05, interval)
+        self.progress = progress
+        self.bar_width = max(6, min(60, int(bar_width or 20)))
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._last_len: int = 0
 
     def _loop(self) -> None:
         i = 0
         while not self._stop_event.is_set():
             frame = self.frames[i % len(self.frames)]
             try:
-                sys.stderr.write("\r" + self.message_prefix + frame)
+                if self.progress:
+                    # Ping-pong progress fill
+                    cycle = max(2 * self.bar_width, 2)
+                    pos = i % cycle
+                    if pos <= self.bar_width:
+                        fill_len = pos
+                    else:
+                        fill_len = cycle - pos
+                    if fill_len < 0:
+                        fill_len = 0
+                    if fill_len > self.bar_width:
+                        fill_len = self.bar_width
+                    bar_fill = "=" * max(0, fill_len - 1) + (">" if fill_len > 0 else ">")
+                    bar_pad = " " * max(0, self.bar_width - fill_len)
+                    bar = "[" + bar_fill + bar_pad + "]"
+                    line = self.message_prefix + bar + " " + frame
+                else:
+                    line = self.message_prefix + frame
+                # Clear previous content if necessary
+                clear_tail = ""
+                if self._last_len > len(line):
+                    clear_tail = " " * (self._last_len - len(line))
+                sys.stderr.write("\r" + line + clear_tail)
                 sys.stderr.flush()
+                self._last_len = len(line)
             except Exception:
                 pass
             time.sleep(self.interval)
@@ -106,7 +139,7 @@ class _Spinner:
         finally:
             # Clear the spinner line
             try:
-                clear_len = max(0, len(self.message_prefix) + 2)
+                clear_len = max(self._last_len, len(self.message_prefix) + 2)
                 sys.stderr.write("\r" + (" " * clear_len) + "\r")
                 sys.stderr.flush()
             except Exception:
@@ -117,8 +150,13 @@ class _Spinner:
 class spinner:
     """Context manager to show a tiny spinner while work is in progress."""
 
-    def __init__(self, message_prefix: str = "explain ", interval: float = 0.1) -> None:
-        self._spinner = _Spinner(message_prefix=message_prefix, interval=interval)
+    def __init__(self, message_prefix: str = "explain ", interval: float = 0.1, progress: bool = False, bar_width: int = 20) -> None:
+        self._spinner = _Spinner(
+            message_prefix=message_prefix,
+            interval=interval,
+            progress=progress,
+            bar_width=bar_width,
+        )
 
     def __enter__(self):
         self._spinner.start()
