@@ -92,6 +92,41 @@ def _truncate_words(text: str, max_words: int) -> str:
         return text
     return " ".join(words[:max_words]) + " …"
 
+def _extract_top_hunks(diff_chunk: str, max_hunks: int = 2, max_lines_per_hunk: int = 60) -> str:
+    """Return up to `max_hunks` hunks from a unified diff chunk, each truncated to `max_lines_per_hunk` lines.
+    Keeps headers and context to remain readable while minimizing tokens.
+    """
+    if not diff_chunk:
+        return ""
+    lines = diff_chunk.splitlines()
+    hunks: list[list[str]] = []
+    current: list[str] = []
+    found_hunk = False
+    for line in lines:
+        if line.startswith("@@"):
+            # Start of a new hunk
+            if current:
+                hunks.append(current)
+                current = []
+            current.append(line)
+            found_hunk = True
+        else:
+            if found_hunk:
+                current.append(line)
+    if current:
+        hunks.append(current)
+    # If no explicit hunks, fall back to head of the file diff
+    if not hunks:
+        return _truncate(diff_chunk, max_lines_per_hunk * 80)
+    # Take top hunks
+    selected: list[str] = []
+    for hunk in hunks[:max_hunks]:
+        if len(hunk) > max_lines_per_hunk:
+            selected.append("\n".join(hunk[:max_lines_per_hunk] + ["…"]))
+        else:
+            selected.append("\n".join(hunk))
+    return "\n".join(selected)
+
 def explain_single_commit(target: Optional[str], provider: str) -> None:
     commit_spec = target or "-1"
     sha = resolve_commit_sha(commit_spec)
@@ -202,7 +237,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
     ] or ["(no files)"]
 
     # Cumulative diff (trimmed)
-    cumulative_patch = get_cumulative_diff_patch(base_sha, anchor_sha, max_bytes=40_000)
+    cumulative_patch = get_cumulative_diff_patch(base_sha, anchor_sha, max_bytes=30_000)
     file_chunks = dict(split_patch_by_file(cumulative_patch))
 
     def _should_skip_file(path: str) -> bool:
@@ -218,6 +253,10 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
             return True
         if any(p.endswith(name) for name in ["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]):
             return True
+        # Prefer code files; deprioritize non-code
+        code_exts = (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb", ".rs", ".java", ".kt", ".swift", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs")
+        if not p.endswith(code_exts):
+            return True
         return False
 
     # Select important files by churn and filter noise
@@ -228,7 +267,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         if path not in file_chunks:
             continue
         selected_files.append((adds, dels, path))
-        if len(selected_files) >= 10:
+        if len(selected_files) >= 6:
             break
 
     # Summarize each selected file with a tiny prompt to save tokens
@@ -237,21 +276,26 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         chunk = file_chunks.get(path, "")
         if not chunk:
             continue
+        chunk = _extract_top_hunks(chunk, max_hunks=2, max_lines_per_hunk=48)
         file_prompt = "\n".join(
             [
-                f"Summarize changes in {path} (<=120 words). Focus on intent and key edits.",
+                f"Summarize changes in {path} (<=100 words). Focus on intent and key edits.",
                 f"Stats: +{adds}/-{dels}",
                 "Diff (trimmed):",
                 "```diff",
-                _truncate(chunk, 6000),
+                _truncate(chunk, 1200),
                 "```",
             ]
         )
-        file_summary = generate_text(file_prompt, max_tokens=240, temperature=0.2)
+        file_summary = generate_text(file_prompt, max_tokens=180, temperature=0.2)
         if isinstance(file_summary, str) and file_summary.strip().startswith("⚠️"):
             # Fallback minimal
             file_summary = f"{path}: (+{adds}/-{dels})"
-        per_file_summaries.append(f"- {path} (+{adds}/-{dels}): {file_summary}")
+        per_file_summaries.append(f"- {path} (+{adds}/-{dels}): {_truncate_words(file_summary, 60)}")
+
+    # Ensure the aggregated per-file section is not too long
+    if len("\n".join(per_file_summaries)) > 4000:
+        per_file_summaries = per_file_summaries[:4] + ["- … (more files truncated)"]
 
     prompt = "\n".join(
         [
