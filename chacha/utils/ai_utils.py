@@ -9,6 +9,8 @@ import os
 import requests
 from dotenv import load_dotenv
 from typing import Optional
+import sys
+from datetime import datetime
 
 try:
     from PyPDF2 import PdfReader  # type: ignore
@@ -67,6 +69,34 @@ def get_api_key(provider: str) -> str:
             )
         return key
     raise ValueError(f"❌ Unknown provider: {provider}")
+
+
+def _is_debug_enabled() -> bool:
+    v = (os.getenv("CHACHA_DEBUG") or "").strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+
+def _get_debug_file() -> Optional[str]:
+    path = (os.getenv("CHACHA_DEBUG_FILE") or "").strip()
+    return path or None
+
+
+def _debug_log(message: str) -> None:
+    if not _is_debug_enabled():
+        return
+    timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    header = f"[CHACHA DEBUG {timestamp}] "
+    try:
+        target_file = _get_debug_file()
+        if target_file:
+            with open(target_file, "a", encoding="utf-8") as f:
+                f.write(header + message + "\n")
+        else:
+            sys.stderr.write(header + message + "\n")
+            sys.stderr.flush()
+    except Exception:
+        # Never fail the main flow due to debug logging
+        pass
 
 
 def _read_file_content(path: str) -> str:
@@ -196,6 +226,16 @@ def generate_text(prompt: str, *, max_tokens: int = 2000, temperature: float = 0
     provider = get_provider()
     if provider == PROVIDER_ANTHROPIC:
         api_key = get_api_key(PROVIDER_ANTHROPIC)
+        model = os.getenv("CHACHA_ANTHROPIC_MODEL") or "claude-3-sonnet-20240229"
+        if _is_debug_enabled():
+            _debug_log(
+                "Anthropic request:"
+                f"\n- model={model}"
+                f"\n- max_tokens={max_tokens}"
+                f"\n- temperature={temperature}"
+                f"\n- prompt_len_chars={len(prompt)}"
+                f"\n- prompt_preview={prompt[:1000]}"
+            )
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -203,13 +243,18 @@ def generate_text(prompt: str, *, max_tokens: int = 2000, temperature: float = 0
                 "content-type": "application/json",
             },
             json={
-                "model": os.getenv("CHACHA_ANTHROPIC_MODEL") or "claude-3-sonnet-20240229",
+                "model": model,
                 "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": temperature,
             },
             timeout=60,
         )
+        if _is_debug_enabled():
+            try:
+                _debug_log(f"Anthropic response: status={response.status_code} body_preview={response.text[:1200]}")
+            except Exception:
+                _debug_log("Anthropic response: <unavailable for debug>")
         data = response.json()
         if isinstance(data, dict) and data.get("content"):
             first = data["content"][0]
@@ -226,6 +271,16 @@ def generate_text(prompt: str, *, max_tokens: int = 2000, temperature: float = 0
             f"https://generativelanguage.googleapis.com/{api_version}/models/"
             f"{model}:generateContent?key={api_key}"
         )
+        if _is_debug_enabled():
+            _debug_log(
+                "Gemini request:"
+                f"\n- url={url.split('?')[0]}"
+                f"\n- model={model}"
+                f"\n- max_tokens={max_tokens}"
+                f"\n- temperature={temperature}"
+                f"\n- prompt_len_chars={len(prompt)}"
+                f"\n- prompt_preview={prompt[:1000]}"
+            )
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -239,6 +294,11 @@ def generate_text(prompt: str, *, max_tokens: int = 2000, temperature: float = 0
             headers={"Content-Type": "application/json"},
             timeout=60,
         )
+        if _is_debug_enabled():
+            try:
+                _debug_log(f"Gemini response: status={response.status_code} body_preview={response.text[:1200]}")
+            except Exception:
+                _debug_log("Gemini response: <unavailable for debug>")
         if response.status_code != 200:
             try:
                 err = response.json()
