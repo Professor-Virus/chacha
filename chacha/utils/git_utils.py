@@ -172,3 +172,33 @@ def get_cumulative_diff_numstat(base: str, anchor: str) -> list[tuple[int, int, 
         rows.append((adds, dels, path))
     return rows
 
+
+def split_patch_by_file(patch: str) -> list[tuple[str, str]]:
+    """Split a unified diff into (path, chunk) pairs using 'diff --git a/ b/' markers."""
+    if not patch:
+        return []
+    results: list[tuple[str, str]] = []
+    current_lines: list[str] = []
+    current_path: str = ""
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            # Flush previous
+            if current_lines and current_path:
+                results.append((current_path, "\n".join(current_lines)))
+            # Parse path
+            parts = line.strip().split()
+            # Format: diff --git a/path b/path
+            if len(parts) >= 4 and parts[-2].startswith("a/") and parts[-1].startswith("b/"):
+                path_a = parts[-2][2:]
+                path_b = parts[-1][2:]
+                # Prefer b/ path, fallback to a/
+                current_path = path_b or path_a
+            else:
+                current_path = ""
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+    if current_lines and current_path:
+        results.append((current_path, "\n".join(current_lines)))
+    return results
+
