@@ -1,4 +1,4 @@
-"""Chacha CLI."""
+"""Chacha CLI tool"""
 
 from __future__ import annotations
 

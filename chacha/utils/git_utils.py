@@ -57,45 +57,45 @@ def get_staged_files() -> list[str]:
     return [f.strip() for f in out.splitlines() if f.strip()]
 
 
-def get_all_changed_files() -> dict[str, str]:
-    """Get all changed files with their status.
+# def get_all_changed_files() -> dict[str, str]:
+#     """Get all changed files with their status.
     
-    Returns:
-        Dictionary mapping filename to status:
-        - 'staged': File is staged
-        - 'unstaged': File is modified but not staged
-        - 'both': File has both staged and unstaged changes
-    """
-    out = _run_git(["status", "--porcelain"])
-    files: dict[str, str] = {}
+#     Returns:
+#         Dictionary mapping filename to status:
+#         - 'staged': File is staged
+#         - 'unstaged': File is modified but not staged
+#         - 'both': File has both staged and unstaged changes
+#     """
+#     out = _run_git(["status", "--porcelain"])
+#     files: dict[str, str] = {}
     
-    for line in out.splitlines():
-        if not line or len(line) < 3:
-            continue
+#     for line in out.splitlines():
+#         if not line or len(line) < 3:
+#             continue
         
-        status = line[:2]
-        # Git status format: "XY filename" - split after the 2-char status
-        # Use split with maxsplit=1 to handle filenames with spaces
-        parts = line[2:].strip().split(maxsplit=1)
-        if len(parts) < 2:
-            continue
+#         status = line[:2]
+#         # Git status format: "XY filename" - split after the 2-char status
+#         # Use split with maxsplit=1 to handle filenames with spaces
+#         parts = line[2:].strip().split(maxsplit=1)
+#         if len(parts) < 2:
+#             continue
         
-        filename = parts[1].strip()
+#         filename = parts[1].strip()
         
-        staged = status[0] in ["M", "A", "D", "R", "C"]
-        unstaged = status[1] in ["M", "A", "D", "R", "?"]
+#         staged = status[0] in ["M", "A", "D", "R", "C"]
+#         unstaged = status[1] in ["M", "A", "D", "R", "?"]
         
-        if staged and unstaged:
-            files[filename] = "both"
-        elif staged:
-            files[filename] = "staged"
-        elif unstaged:
-            files[filename] = "unstaged"
+#         if staged and unstaged:
+#             files[filename] = "both"
+#         elif staged:
+#             files[filename] = "staged"
+#         elif unstaged:
+#             files[filename] = "unstaged"
     
-    return files
+#     return files
 
 
-def stage_files(files: list[str]) -> tuple[bool, str]:
+def stage_files() -> tuple[bool, str]:
     """Stage the given files.
     
     Args:
@@ -105,6 +105,7 @@ def stage_files(files: list[str]) -> tuple[bool, str]:
         Tuple of (success: bool, error_message: str)
         If successful, error_message will be empty
     """
+    files = get_changed_files()
     if not files:
         return True, ""
     
