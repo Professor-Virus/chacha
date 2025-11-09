@@ -24,6 +24,7 @@ from chacha.utils.git_utils import (
     get_cumulative_diff_shortstat,
     get_cumulative_diff_numstat,
     split_patch_by_file,
+    get_commit_numstat,
 )
 
 
@@ -247,7 +248,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         for adds, dels, path in top_files
     ] or ["(no files)"]
 
-    # Cumulative diff (trimmed)
+    # Cumulative diff (trimmed) and per-file chunks
     cumulative_patch = get_cumulative_diff_patch(base_sha, anchor_sha, max_bytes=30_000)
     file_chunks = dict(split_patch_by_file(cumulative_patch))
 
@@ -281,7 +282,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         if len(selected_files) >= 6:
             break
 
-    # Summarize each selected file with a tiny prompt to save tokens
+    # Summarize each selected file with a tiny prompt to save tokens (net-new since base)
     per_file_summaries: list[str] = []
     for adds, dels, path in selected_files:
         chunk = file_chunks.get(path, "")
@@ -308,6 +309,45 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
     if len("\n".join(per_file_summaries)) > 4000:
         per_file_summaries = per_file_summaries[:4] + ["- … (more files truncated)"]
 
+    # Base commit compact summary (HEAD~N)
+    base_subject = get_commit_subject(base_sha)
+    base_stats = get_commit_stats(base_sha)
+    base_patch = get_commit_patch(base_sha, max_bytes=20_000)
+    base_chunks = dict(split_patch_by_file(base_patch))
+    base_numstat = get_commit_numstat(base_sha)
+    base_ranked = sorted(base_numstat, key=lambda r: (r[0] + r[1]), reverse=True)
+
+    base_selected: list[tuple[int, int, str]] = []
+    for adds, dels, path in base_ranked:
+        if _should_skip_file(path):
+            continue
+        if path not in base_chunks:
+            continue
+        base_selected.append((adds, dels, path))
+        if len(base_selected) >= 4:
+            break
+
+    base_file_summaries: list[str] = []
+    for adds, dels, path in base_selected:
+        chunk = base_chunks.get(path, "")
+        if not chunk:
+            continue
+        chunk = _extract_top_hunks(chunk, max_hunks=1, max_lines_per_hunk=40)
+        base_prompt = "\n".join(
+            [
+                f"Summarize changes in base commit file {path} (<=80 words).",
+                f"Stats: +{adds}/-{dels}",
+                "Diff (trimmed):",
+                "```diff",
+                _truncate(chunk, 800),
+                "```",
+            ]
+        )
+        base_summary = generate_text(base_prompt, max_tokens=140, temperature=0.2)
+        if isinstance(base_summary, str) and base_summary.strip().startswith("⚠️"):
+            base_summary = f"{path}: (+{adds}/-{dels})"
+        base_file_summaries.append(f"- {path} (+{adds}/-{dels}): {_truncate_words(base_summary, 50)}")
+
     prompt = "\n".join(
         [
             "You are a senior engineer. Explain these commits as a cohesive change set (<=500 words).",
@@ -318,10 +358,15 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
             "Commits (oldest → newest):",
             subjects_bullets,
             "",
+            "Base commit (compressed view):",
+            f"- Subject: {base_subject}",
+            f"- Stats: {base_stats or '(no stats)'}",
+            *(base_file_summaries if base_file_summaries else ["(no base file summaries)"]),
+            "",
             "Cumulative shortstat:",
             shortstat or "(none)",
             "",
-            "Per-file summaries (top files):",
+            "Net-new since base (top files, compressed):",
             *(per_file_summaries if per_file_summaries else top_files_lines),
             "",
             "Please produce:",
@@ -334,8 +379,8 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
     # Dynamic pruning to respect prompt token budget
     # If too large, drop per-file summaries from the end, then trim subjects.
     if _estimate_tokens(prompt) > MAX_PROMPT_TOKENS:
-        pruned = list(per_file_summaries)
-        while pruned and _estimate_tokens(
+        pruned_new = list(per_file_summaries)
+        while pruned_new and _estimate_tokens(
             "\n".join(
                 [
                     "You are a senior engineer. Explain these commits as a cohesive change set (<=500 words).",
@@ -346,11 +391,16 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                     "Commits (oldest → newest):",
                     subjects_bullets,
                     "",
+                    "Base commit (compressed view):",
+                    f"- Subject: {base_subject}",
+                    f"- Stats: {base_stats or '(no stats)'}",
+                    *(base_file_summaries if base_file_summaries else ["(no base file summaries)"]),
+                    "",
                     "Cumulative shortstat:",
                     shortstat or "(none)",
                     "",
-                    "Per-file summaries (top files):",
-                    *pruned,
+                    "Net-new since base (top files, compressed):",
+                    *pruned_new,
                     "",
                     "Please produce:",
                     "- TL;DR (1-2 sentences)",
@@ -360,8 +410,8 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 ]
             )
         ) > MAX_PROMPT_TOKENS:
-            pruned.pop()
-        per_file_summaries = pruned
+            pruned_new.pop()
+        per_file_summaries = pruned_new
         prompt = "\n".join(
             [
                 "You are a senior engineer. Explain these commits as a cohesive change set (<=500 words).",
@@ -372,10 +422,15 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 "Commits (oldest → newest):",
                 subjects_bullets,
                 "",
+                "Base commit (compressed view):",
+                f"- Subject: {base_subject}",
+                f"- Stats: {base_stats or '(no stats)'}",
+                *(base_file_summaries if base_file_summaries else ["(no base file summaries)"]),
+                "",
                 "Cumulative shortstat:",
                 shortstat or "(none)",
                 "",
-                "Per-file summaries (top files):",
+                "Net-new since base (top files, compressed):",
                 *(per_file_summaries if per_file_summaries else top_files_lines),
                 "",
                 "Please produce:",
@@ -400,10 +455,15 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
                 "Commits (oldest → newest):",
                 subjects_bullets,
                 "",
+                "Base commit (compressed view):",
+                f"- Subject: {base_subject}",
+                f"- Stats: {base_stats or '(no stats)'}",
+                *(base_file_summaries if base_file_summaries else ["(no base file summaries)"]),
+                "",
                 "Cumulative shortstat:",
                 shortstat or "(none)",
                 "",
-                "Per-file summaries (top files):",
+                "Net-new since base (top files, compressed):",
                 *(per_file_summaries if per_file_summaries else top_files_lines),
                 "",
                 "Please produce:",
