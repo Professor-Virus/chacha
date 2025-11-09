@@ -5,6 +5,9 @@ from __future__ import annotations
 import shutil
 import textwrap
 from typing import Iterable, Optional
+import sys
+import threading
+import time
 
 
 def _get_terminal_width(default: int = 100) -> int:
@@ -65,4 +68,64 @@ def format_box(title: str, content: str, subtitle: Optional[str] = None, width: 
     lines.append("└" + ("─" * inner_width) + "┘")
     return "\n".join(lines)
 
+
+class _Spinner:
+    def __init__(self, message_prefix: str = "explain ", frames: Optional[list[str]] = None, interval: float = 0.1) -> None:
+        self.message_prefix = message_prefix
+        self.frames = frames or ["-", "\\", "|", "/"]
+        self.interval = max(0.05, interval)
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def _loop(self) -> None:
+        i = 0
+        while not self._stop_event.is_set():
+            frame = self.frames[i % len(self.frames)]
+            try:
+                sys.stderr.write("\r" + self.message_prefix + frame)
+                sys.stderr.flush()
+            except Exception:
+                pass
+            time.sleep(self.interval)
+            i += 1
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        try:
+            self._stop_event.set()
+            if self._thread is not None:
+                self._thread.join(timeout=0.5)
+        except Exception:
+            pass
+        finally:
+            # Clear the spinner line
+            try:
+                clear_len = max(0, len(self.message_prefix) + 2)
+                sys.stderr.write("\r" + (" " * clear_len) + "\r")
+                sys.stderr.flush()
+            except Exception:
+                pass
+            self._thread = None
+
+
+class spinner:
+    """Context manager to show a tiny spinner while work is in progress."""
+
+    def __init__(self, message_prefix: str = "explain ", interval: float = 0.1) -> None:
+        self._spinner = _Spinner(message_prefix=message_prefix, interval=interval)
+
+    def __enter__(self):
+        self._spinner.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._spinner.stop()
+        # Propagate exceptions, if any
+        return False
 
