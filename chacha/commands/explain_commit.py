@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import typer
 from typing import Optional, List
 
@@ -91,6 +92,16 @@ def _truncate_words(text: str, max_words: int) -> str:
     if len(words) <= max_words:
         return text
     return " ".join(words[:max_words]) + " …"
+
+def _estimate_tokens(text: str) -> int:
+    # Rough heuristic: ~1.3 tokens per word
+    if not isinstance(text, str) or not text:
+        return 0
+    return int(len(text.split()) * 1.3)
+
+# Token budgets (overridable via env)
+MAX_PROMPT_TOKENS = int(os.getenv("CHACHA_MAX_PROMPT_TOKENS", "6000"))
+MAX_SUMMARY_TOKENS = int(os.getenv("CHACHA_MAX_SUMMARY_TOKENS", "1500"))
 
 def _extract_top_hunks(diff_chunk: str, max_hunks: int = 2, max_lines_per_hunk: int = 60) -> str:
     """Return up to `max_hunks` hunks from a unified diff chunk, each truncated to `max_lines_per_hunk` lines.
@@ -320,6 +331,88 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
             "- Tests to add or update",
         ]
     )
+    # Dynamic pruning to respect prompt token budget
+    # If too large, drop per-file summaries from the end, then trim subjects.
+    if _estimate_tokens(prompt) > MAX_PROMPT_TOKENS:
+        pruned = list(per_file_summaries)
+        while pruned and _estimate_tokens(
+            "\n".join(
+                [
+                    "You are a senior engineer. Explain these commits as a cohesive change set (<=500 words).",
+                    "Focus on the overarching goal, how changes evolve across the set, and net outcomes.",
+                    "",
+                    f"Commit range: {base_sha[:12]}..{anchor_sha[:12]} (last {count} commits)",
+                    "",
+                    "Commits (oldest → newest):",
+                    subjects_bullets,
+                    "",
+                    "Cumulative shortstat:",
+                    shortstat or "(none)",
+                    "",
+                    "Per-file summaries (top files):",
+                    *pruned,
+                    "",
+                    "Please produce:",
+                    "- TL;DR (1-2 sentences)",
+                    "- Key changes by theme (bulleted)",
+                    "- Risks and potential regressions",
+                    "- Tests to add or update",
+                ]
+            )
+        ) > MAX_PROMPT_TOKENS:
+            pruned.pop()
+        per_file_summaries = pruned
+        prompt = "\n".join(
+            [
+                "You are a senior engineer. Explain these commits as a cohesive change set (<=500 words).",
+                "Focus on the overarching goal, how changes evolve across the set, and net outcomes.",
+                "",
+                f"Commit range: {base_sha[:12]}..{anchor_sha[:12]} (last {count} commits)",
+                "",
+                "Commits (oldest → newest):",
+                subjects_bullets,
+                "",
+                "Cumulative shortstat:",
+                shortstat or "(none)",
+                "",
+                "Per-file summaries (top files):",
+                *per_file_summaries if per_file_summaries else top_files_lines,
+                "",
+                "Please produce:",
+                "- TL;DR (1-2 sentences)",
+                "- Key changes by theme (bulleted)",
+                "- Risks and potential regressions",
+                "- Tests to add or update",
+            ]
+        )
+    if _estimate_tokens(prompt) > MAX_PROMPT_TOKENS:
+        # Trim subjects to first K lines
+        subject_lines = subjects_bullets.splitlines()
+        keep = min(8, len(subject_lines))
+        subjects_bullets = "\n".join(subject_lines[:keep] + (["…"] if len(subject_lines) > keep else []))
+        prompt = "\n".join(
+            [
+                "You are a senior engineer. Explain these commits as a cohesive change set (<=500 words).",
+                "Focus on the overarching goal, how changes evolve across the set, and net outcomes.",
+                "",
+                f"Commit range: {base_sha[:12]}..{anchor_sha[:12]} (last {count} commits)",
+                "",
+                "Commits (oldest → newest):",
+                subjects_bullets,
+                "",
+                "Cumulative shortstat:",
+                shortstat or "(none)",
+                "",
+                "Per-file summaries (top files):",
+                *per_file_summaries if per_file_summaries else top_files_lines,
+                "",
+                "Please produce:",
+                "- TL;DR (1-2 sentences)",
+                "- Key changes by theme (bulleted)",
+                "- Risks and potential regressions",
+                "- Tests to add or update",
+            ]
+        )
     response = generate_text(prompt, max_tokens=1100, temperature=0.2)
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         prompt_no_diff = "\n".join(
