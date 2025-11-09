@@ -106,6 +106,25 @@ def get_commit_stats(sha: str) -> str:
     stat = _run_git(["show", "--stat", "--oneline", sha])
     return stat or ""
 
+def get_commit_numstat(sha: str) -> list[tuple[int, int, str]]:
+    """Return per-file added/deleted counts for a single commit."""
+    out = _run_git(["show", "--numstat", "--pretty=format:", sha])
+    rows: list[tuple[int, int, str]] = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        adds_s, dels_s, path = parts
+        try:
+            adds = int(adds_s) if adds_s.isdigit() else 0
+        except Exception:
+            adds = 0
+        try:
+            dels = int(dels_s) if dels_s.isdigit() else 0
+        except Exception:
+            dels = 0
+        rows.append((adds, dels, path))
+    return rows
 
 def get_commit_patch(sha: str, max_bytes: int = 200_000) -> str:
     """Return unified diff patch for a commit; truncate if too large."""
