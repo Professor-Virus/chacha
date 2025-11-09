@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import typer
 from typing import Optional, List
+import re
 
 from chacha.utils import ui_utils
 from chacha.utils.ai_utils import generate_text, get_provider
@@ -104,6 +105,43 @@ def _estimate_tokens(text: str) -> int:
 MAX_PROMPT_TOKENS = int(os.getenv("CHACHA_MAX_PROMPT_TOKENS", "6000"))
 MAX_SUMMARY_TOKENS = int(os.getenv("CHACHA_MAX_SUMMARY_TOKENS", "1500"))
 
+def _sanitize_to_plain_bullets(text: str, max_lines: int = 30) -> str:
+    """Convert arbitrary markdown-ish text to plain '-' bullets and strip markdown artifacts."""
+    if not isinstance(text, str):
+        return ""
+    lines: list[str] = []
+    in_code_block = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Drop markdown headers and emphasis
+        stripped = re.sub(r"^#{1,6}\s*", "", stripped)
+        stripped = stripped.replace("**", "").replace("__", "").replace("_", "")
+        # Normalize bullets/numbered lists
+        if re.match(r"^\d+[\.\)]\s+", stripped):
+            stripped = re.sub(r"^\d+[\.\)]\s+", "- ", stripped)
+        elif stripped.startswith(("* ", "• ", "– ", "— ")):
+            stripped = "- " + stripped[2:].lstrip()
+        elif stripped.startswith("- "):
+            # already ok
+            pass
+        else:
+            # Make non-bullet lines bullets for uniformity
+            stripped = "- " + stripped
+        lines.append(stripped)
+        if len(lines) >= max_lines:
+            break
+    if not lines:
+        return ""
+    return "\n".join(lines)
+
 def _extract_top_hunks(diff_chunk: str, max_hunks: int = 2, max_lines_per_hunk: int = 60) -> str:
     """Return up to `max_hunks` hunks from a unified diff chunk, each truncated to `max_lines_per_hunk` lines.
     Keeps headers and context to remain readable while minimizing tokens.
@@ -163,9 +201,14 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     prompt_parts: List[str] = [
         "You are a senior engineer. Explain this Git commit for a code review summary.",
         "",
-        "Please produce (<=500 words):",
-        "- TL;DR (1-2 sentences)",
-        "- Key changes (bulleted)",
+        "Output format requirements:",
+        "- Plain text only with simple '-' bullets",
+        "- No markdown (no bold, headers, tables, code fences)",
+        "- Be concise (<=200 words total)",
+        "",
+        "Please produce bullets for:",
+        "- TL;DR",
+        "- Key changes",
         "- Potential risks or regressions",
         "- Tests to add or update",
         "",
@@ -185,11 +228,6 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
             "",
             "Stats:",
             stats or "(no stats)",
-            "",
-            "Unified Diff (trimmed, may be truncated):",
-            "```diff",
-            _truncate(trimmed_patch, 3000) or "(no patch)",
-            "```",
         ]
     )
     prompt = "\n".join(prompt_parts)
@@ -199,9 +237,14 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
             [
                 "You are a senior engineer. Explain this Git commit for a code review summary.",
                 "",
-                "Please produce (<=300 words):",
-                "- TL;DR (1-2 sentences)",
-                "- Key changes (bulleted)",
+                "Output format requirements:",
+                "- Plain text only with simple '-' bullets",
+                "- No markdown (no bold, headers, tables, code fences)",
+                "- Be concise (<=180 words total)",
+                "",
+                "Please produce bullets for:",
+                "- TL;DR",
+                "- Key changes",
                 "- Potential risks or regressions",
                 "- Tests to add or update",
                 "",
@@ -225,7 +268,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         compact = "\n".join(
             [
-                "Explain this commit succinctly (<=180 words).",
+                "Explain this commit succinctly as plain '-' bullets (<=160 words). No markdown.",
                 f"SHA: {sha}",
                 f"Subject: {subject}",
                 "Files:",
@@ -235,7 +278,7 @@ def explain_single_commit(target: Optional[str], provider: str) -> None:
             ]
         )
         response = generate_text(compact, max_tokens=700, temperature=0.0)
-    response = _truncate_words(response, 500)
+    response = _sanitize_to_plain_bullets(response, max_lines=28)
     box = ui_utils.format_box(
         title="Chacha — Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commit: {sha[:12]}",
@@ -319,19 +362,18 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         chunk = _extract_top_hunks(chunk, max_hunks=2, max_lines_per_hunk=48)
         file_prompt = "\n".join(
             [
-                f"Summarize changes in {path} (<=100 words). Focus on intent and key edits.",
+                f"Summarize changes in {path} as ONE bullet (<=25 words).",
+                "Output plain '-' bullet only; no markdown.",
                 f"Stats: +{adds}/-{dels}",
                 "Diff (trimmed):",
-                "```diff",
                 _truncate(chunk, 1200),
-                "```",
             ]
         )
         file_summary = generate_text(file_prompt, max_tokens=180, temperature=0.2)
         if isinstance(file_summary, str) and file_summary.strip().startswith("⚠️"):
             # Fallback minimal
             file_summary = f"{path}: (+{adds}/-{dels})"
-        per_file_summaries.append(f"- {path} (+{adds}/-{dels}): {_truncate_words(file_summary, 60)}")
+        per_file_summaries.append(f"- {path} (+{adds}/-{dels}): {_truncate_words(_sanitize_to_plain_bullets(file_summary, max_lines=1), 50)}")
 
     # Ensure the aggregated per-file section is not too long
     if len("\n".join(per_file_summaries)) > 4000:
@@ -363,23 +405,27 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         chunk = _extract_top_hunks(chunk, max_hunks=1, max_lines_per_hunk=40)
         base_prompt = "\n".join(
             [
-                f"Summarize changes in base commit file {path} (<=80 words).",
+                f"Summarize changes in base commit file {path} as ONE bullet (<=20 words).",
+                "Output plain '-' bullet only; no markdown.",
                 f"Stats: +{adds}/-{dels}",
                 "Diff (trimmed):",
-                "```diff",
                 _truncate(chunk, 800),
-                "```",
             ]
         )
         base_summary = generate_text(base_prompt, max_tokens=140, temperature=0.2)
         if isinstance(base_summary, str) and base_summary.strip().startswith("⚠️"):
             base_summary = f"{path}: (+{adds}/-{dels})"
-        base_file_summaries.append(f"- {path} (+{adds}/-{dels}): {_truncate_words(base_summary, 50)}")
+        base_file_summaries.append(f"- {path} (+{adds}/-{dels}): {_truncate_words(_sanitize_to_plain_bullets(base_summary, max_lines=1), 40)}")
 
     prompt = "\n".join(
         [
-            "You are a senior engineer. Explain these commits as a cohesive change set (<=500 words).",
-            "Focus on the overarching goal, how changes evolve across the set, and net outcomes.",
+            "You are a senior engineer. Explain these commits as a cohesive change set.",
+            "Focus on the overarching goal, evolution across commits, and net outcomes.",
+            "",
+            "Output format requirements:",
+            "- Plain text with simple '-' bullets only",
+            "- No markdown (no bold, headers, tables, code fences)",
+            "- Be concise (<=280 words total)",
             "",
             f"Commit range: {base_sha[:12]}..{anchor_sha[:12]} (last {count} commits)",
             "",
@@ -398,8 +444,8 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
             *(per_file_summaries if per_file_summaries else top_files_lines),
             "",
             "Please produce:",
-            "- TL;DR (1-2 sentences)",
-            "- Key changes by theme (bulleted)",
+            "- TL;DR",
+            "- Key changes by theme",
             "- Risks and potential regressions",
             "- Tests to add or update",
         ]
@@ -505,7 +551,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
     if isinstance(response, str) and response.strip().startswith("⚠️"):
         prompt_no_diff = "\n".join(
             [
-                "Explain this cohesive set briefly (<=250 words).",
+                "Explain this cohesive set briefly as plain '-' bullets (<=220 words). No markdown.",
                 f"Commit range: {base_sha[:12]}..{anchor_sha[:12]} (last {count} commits)",
                 "",
                 "Commits:",
@@ -530,7 +576,7 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
         lines.append("Note: Cohesive LLM summary unavailable; showing top changes instead.")
         response = "\n".join(lines)
 
-    response = _truncate_words(response, 500)
+    response = _sanitize_to_plain_bullets(response, max_lines=36)
     box = ui_utils.format_box(
         title="Chacha — Cohesive Commit Explanation",
         subtitle=f"Provider: {provider}  •  Commits: {count} (range {base_sha[:12]}..{anchor_sha[:12]})",
