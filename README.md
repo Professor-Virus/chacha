@@ -1,4 +1,4 @@
-# Chacha CLI
+# Chacha CLI - 0.1
 
 Chacha is a lightweight CLI toolkit providing developer helpers:
 - explain: placeholder for code explanations
@@ -8,11 +8,41 @@ Chacha is a lightweight CLI toolkit providing developer helpers:
 
 ## Installation
 
+### For Local Development (Recommended)
+
+If you're developing locally and want to test changes immediately:
+
 ```bash
-pip install .
+# First time
+pipx install .
+
+# After making changes, reinstall
+pipx reinstall .
+
+# If no changes show after reinstalling, run
+
+pipx uninstall chacha-cli && pipx install .
 ```
 
-This will install the `chacha` console command.
+This installs from your local directory and picks up your changes immediately.
+
+### From GitHub (Production/Shared)
+
+To install from the GitHub repository:
+
+```bash
+# Install from main branch
+pipx install --spec git+https://github.com/Professor-Virus/chacha.git@main chacha-cli
+
+# Install from a specific branch
+pipx install --spec git+https://github.com/Professor-Virus/chacha.git@branch-name chacha-cli
+
+# To reinstall/update from GitHub
+pipx uninstall chacha-cli
+pipx install --spec git+https://github.com/Professor-Virus/chacha.git@branch-name chacha-cli
+```
+
+**Note:** Installing from GitHub requires you to push your changes first. For local development, use `pipx install .` instead.
 
 ## Usage
 
@@ -85,5 +115,3 @@ export GEMINI_API_KEY=AIza...
 ## License
 
 MIT
-
-
