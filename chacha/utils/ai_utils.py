@@ -125,29 +125,26 @@ def _explain_with_gemini(content: str) -> str:
     api_key = get_api_key(PROVIDER_GEMINI)
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-1.5-pro:generateContent"
-        f"?key={api_key}"
+        "gemini-2.0-flash:generateContent"
     )
     payload = {
         "contents": [
-            {"parts": [{"text": f"Explain this code:\n\n{content}"}]}
-        ],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 2000,
-        },
-        # Try to reduce accidental safety blocks for benign code explanations
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ],
+            {
+                "parts": [
+                    {
+                        "text": f"Generate a commit message for the following changes:\n\n{content}"
+                    }
+                ]
+            }
+        ]
     }
     response = requests.post(
         url,
         json=payload,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-goog-api-key": api_key,
+        },
         timeout=60,
     )
 
@@ -196,4 +193,134 @@ def _explain_with_gemini(content: str) -> str:
 
     return "⚠️ No explanation received from Gemini."
 
+
+def generate_commit_message(diff: str, staged_files: list[str] | None = None) -> str:
+    """Generate a commit message from git diff using AI. PLEASE ONLY RETURN THE COMMIT MESSAGE, NO EXTRA TEXT OR EXPLANATION.
+    
+    Args:
+        diff: The git diff string
+        staged_files: Optional list of staged file names for context
+    
+    Returns:
+        A suggested commit message
+    """
+    if not diff.strip():
+        return "⚠️ No changes found to generate commit message."
+    
+    provider = get_provider()
+    
+    # Build context about files changed
+    files_context = ""
+    if staged_files:
+        files_context = f"\nFiles changed: {', '.join(staged_files)}\n"
+    
+    prompt = f"""Generate a concise, clear git commit message for these changes.
+
+{files_context}
+Git diff:
+{diff}
+
+Rules:
+- Use conventional commit format if appropriate (feat:, fix:, refactor:, etc.)
+- Keep it under 72 characters for the subject line
+- Be specific about what changed
+- Use imperative mood ("Add feature" not "Added feature")
+- Only return the commit message, no extra text or explanation"""
+
+    if provider == PROVIDER_ANTHROPIC:
+        return _generate_commit_with_anthropic(prompt)
+    if provider == PROVIDER_GEMINI:
+        return _generate_commit_with_gemini(prompt)
+    return "⚠️ Unsupported provider."
+
+
+def _generate_commit_with_anthropic(prompt: str) -> str:
+    """Generate commit message using Anthropic Claude."""
+    api_key = get_api_key(PROVIDER_ANTHROPIC)
+    response = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "content-type": "application/json",
+        },
+        json={
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 200,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+        },
+        timeout=60,
+    )
+    
+    if not response.ok:
+        return f"⚠️ API error ({response.status_code}): {response.text[:200]}"
+    
+    data = response.json()
+    if isinstance(data, dict) and data.get("content"):
+        first = data["content"][0]
+        if isinstance(first, dict) and "text" in first:
+            return first["text"].strip()
+    return "⚠️ No commit message received from Anthropic."
+
+
+def _generate_commit_with_gemini(prompt: str) -> str:
+    """Generate commit message using Google Gemini."""
+    api_key = get_api_key(PROVIDER_GEMINI)
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-2.0-flash:generateContent"
+    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ]
+    }
+    
+    response = requests.post(
+        url,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-goog-api-key": api_key,
+        },
+        timeout=60,
+    )
+    
+    if response.status_code != 200:
+        try:
+            err = response.json()
+            if isinstance(err, dict) and "error" in err:
+                msg = err.get("error", {}).get("message") or str(err)
+                return f"⚠️ Gemini error ({response.status_code}): {msg}"
+        except Exception:
+            pass
+        return f"⚠️ Gemini HTTP {response.status_code}: {response.text[:200]}"
+    
+    data = response.json()
+    
+    if isinstance(data, dict) and "error" in data:
+        msg = data.get("error", {}).get("message") or str(data)
+        return f"⚠️ Gemini error: {msg}"
+    
+    if isinstance(data, dict):
+        candidates = data.get("candidates")
+        if isinstance(candidates, list) and candidates:
+            first = candidates[0]
+            if isinstance(first, dict):
+                content_obj = first.get("content")
+                if isinstance(content_obj, dict):
+                    parts = content_obj.get("parts")
+                    if isinstance(parts, list) and parts:
+                        part0 = parts[0]
+                        if isinstance(part0, dict) and "text" in part0:
+                            return str(part0["text"]).strip() or ""
+    
+    return "⚠️ No commit message received from Gemini."
 

@@ -18,6 +18,10 @@ pipx install .
 
 # After making changes, reinstall
 pipx reinstall .
+
+# If no changes show after reinstalling, run
+
+pipx uninstall chacha-cli && pipx install .
 ```
 
 This installs from your local directory and picks up your changes immediately.
