@@ -22,6 +22,7 @@ from chacha.utils.git_utils import (
     get_cumulative_diff_patch,
     get_cumulative_diff_shortstat,
     get_cumulative_diff_numstat,
+    split_patch_by_file,
 )
 
 
@@ -201,7 +202,56 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
     ] or ["(no files)"]
 
     # Cumulative diff (trimmed)
-    cumulative_patch = get_cumulative_diff_patch(base_sha, anchor_sha, max_bytes=60_000)
+    cumulative_patch = get_cumulative_diff_patch(base_sha, anchor_sha, max_bytes=40_000)
+    file_chunks = dict(split_patch_by_file(cumulative_patch))
+
+    def _should_skip_file(path: str) -> bool:
+        p = path.lower()
+        if not p:
+            return True
+        # Skip common noisy/generated files
+        if any(x in p for x in ["/dist/", "/build/", "/.next/", "/out/"]):
+            return True
+        if any(p.endswith(ext) for ext in [".lock", ".min.js", ".map", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp"]):
+            return True
+        if any(name in p for name in ["node_modules/", "vendor/", "__snapshots__/"]):
+            return True
+        if any(p.endswith(name) for name in ["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]):
+            return True
+        return False
+
+    # Select important files by churn and filter noise
+    selected_files: list[tuple[int, int, str]] = []
+    for adds, dels, path in ranked:
+        if _should_skip_file(path):
+            continue
+        if path not in file_chunks:
+            continue
+        selected_files.append((adds, dels, path))
+        if len(selected_files) >= 10:
+            break
+
+    # Summarize each selected file with a tiny prompt to save tokens
+    per_file_summaries: list[str] = []
+    for adds, dels, path in selected_files:
+        chunk = file_chunks.get(path, "")
+        if not chunk:
+            continue
+        file_prompt = "\n".join(
+            [
+                f"Summarize changes in {path} (<=120 words). Focus on intent and key edits.",
+                f"Stats: +{adds}/-{dels}",
+                "Diff (trimmed):",
+                "```diff",
+                _truncate(chunk, 6000),
+                "```",
+            ]
+        )
+        file_summary = generate_text(file_prompt, max_tokens=240, temperature=0.2)
+        if isinstance(file_summary, str) and file_summary.strip().startswith("⚠️"):
+            # Fallback minimal
+            file_summary = f"{path}: (+{adds}/-{dels})"
+        per_file_summaries.append(f"- {path} (+{adds}/-{dels}): {file_summary}")
 
     prompt = "\n".join(
         [
@@ -216,13 +266,8 @@ def explain_commits_cohesively(anchor_spec: Optional[str], count: int, provider:
             "Cumulative shortstat:",
             shortstat or "(none)",
             "",
-            "Top changed files by churn:",
-            *top_files_lines,
-            "",
-            "Unified cumulative diff (trimmed):",
-            "```diff",
-            cumulative_patch or "(no patch)",
-            "```",
+            "Per-file summaries (top files):",
+            *(per_file_summaries if per_file_summaries else top_files_lines),
             "",
             "Please produce:",
             "- TL;DR (1-2 sentences)",
