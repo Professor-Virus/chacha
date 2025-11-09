@@ -62,7 +62,8 @@ def get_api_key(provider: str) -> str:
             raise ValueError("❌ Missing CLAUDE_API_KEY for Anthropic.")
         return key
     if provider == PROVIDER_GEMINI:
-        key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        # Prefer GOOGLE_API_KEY if both are set (matches Google guidance)
+        key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not key:
             raise ValueError(
                 "❌ Missing GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini."
@@ -154,14 +155,14 @@ def _explain_with_anthropic(content: str) -> str:
 def _explain_with_gemini(content: str) -> str:
     api_key = get_api_key(PROVIDER_GEMINI)
     model = os.getenv("CHACHA_GEMINI_MODEL") or "gemini-2.5-flash"
-    api_version = os.getenv("CHACHA_GEMINI_API_VERSION") or "v1beta"
+    api_version = os.getenv("CHACHA_GEMINI_API_VERSION") or "v1"
     url = (
         f"https://generativelanguage.googleapis.com/{api_version}/models/"
         f"{model}:generateContent?key={api_key}"
     )
     payload = {
         "contents": [
-            {"parts": [{"text": f"Explain this code:\n\n{content}"}]}
+            {"role": "user", "parts": [{"text": f"Explain this code:\n\n{content}"}]}
         ],
         "generationConfig": {
             "temperature": 0.2,
@@ -266,11 +267,21 @@ def generate_text(prompt: str, *, max_tokens: int = 2000, temperature: float = 0
     if provider == PROVIDER_GEMINI:
         api_key = get_api_key(PROVIDER_GEMINI)
         model = os.getenv("CHACHA_GEMINI_MODEL") or "gemini-2.5-flash"
-        api_version = os.getenv("CHACHA_GEMINI_API_VERSION") or "v1beta"
+        api_version = os.getenv("CHACHA_GEMINI_API_VERSION") or "v1"
         url = (
             f"https://generativelanguage.googleapis.com/{api_version}/models/"
             f"{model}:generateContent?key={api_key}"
         )
+        # Optional safety settings override (default: allow all to avoid spurious blocks on diffs)
+        safety_env = (os.getenv("CHACHA_GEMINI_SAFETY") or "off").strip().lower()
+        safety_settings = None
+        if safety_env in {"off", "none", "disable"}:
+            safety_settings = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ]
         if _is_debug_enabled():
             _debug_log(
                 "Gemini request:"
@@ -281,13 +292,17 @@ def generate_text(prompt: str, *, max_tokens: int = 2000, temperature: float = 0
                 f"\n- prompt_len_chars={len(prompt)}"
                 f"\n- prompt_preview={prompt[:1000]}"
             )
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
+        base_payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_tokens,
+                "candidateCount": 1,
             },
         }
+        if safety_settings is not None:
+            base_payload["safetySettings"] = safety_settings  # type: ignore[assignment]
+        payload = base_payload
         response = requests.post(
             url,
             json=payload,
@@ -310,26 +325,76 @@ def generate_text(prompt: str, *, max_tokens: int = 2000, temperature: float = 0
                 return f"⚠️ Gemini HTTP {response.status_code}: {response.text[:500]}"
         data = response.json()
         if isinstance(data, dict):
+            # Surface prompt-level feedback blocks early
+            if "promptFeedback" in data:
+                fb = data.get("promptFeedback") or {}
+                block = isinstance(fb, dict) and fb.get("blockReason")
+                if block:
+                    return f"⚠️ Gemini blocked the request: {block}"
             candidates = data.get("candidates")
             if isinstance(candidates, list) and candidates:
                 first = candidates[0]
                 if isinstance(first, dict):
                     content_obj = first.get("content")
-                    if isinstance(content_obj, dict):
-                        parts = content_obj.get("parts")
-                        if isinstance(parts, list) and parts:
-                            # concatenate all text parts if present
-                            texts: list[str] = []
-                            for part in parts:
-                                if isinstance(part, dict) and "text" in part:
-                                    txt = str(part["text"] or "")
-                                    if txt:
-                                        texts.append(txt)
-                            if texts:
-                                return "\n".join(texts)
+                    # Robust extraction: handle dict or list content shapes
+                    def _extract_texts_from_content(content: object) -> list[str]:
+                        texts: list[str] = []
+                        try:
+                            if isinstance(content, dict):
+                                parts = content.get("parts")
+                                if isinstance(parts, list):
+                                    for part in parts:
+                                        if isinstance(part, dict) and "text" in part:
+                                            txt = str(part.get("text") or "")
+                                            if txt:
+                                                texts.append(txt)
+                            elif isinstance(content, list):
+                                for item in content:
+                                    if isinstance(item, dict):
+                                        parts = item.get("parts")
+                                        if isinstance(parts, list):
+                                            for part in parts:
+                                                if isinstance(part, dict) and "text" in part:
+                                                    txt = str(part.get("text") or "")
+                                                    if txt:
+                                                        texts.append(txt)
+                        except Exception:
+                            pass
+                        return texts
+                    texts = _extract_texts_from_content(content_obj)
+                    if texts:
+                        return "\n".join(texts)
                     # Fallback: surface finish/safety info if no text
                     finish = first.get("finishReason")
                     safety = first.get("safetyRatings")
+                    # If we hit MAX_TOKENS without text, retry once with higher output limit
+                    if (finish == "MAX_TOKENS") and (max_tokens < 4096):
+                        retry_tokens = min(4096, max(1024, max_tokens * 2))
+                        retry_payload = dict(base_payload)
+                        retry_payload["generationConfig"] = dict(base_payload["generationConfig"])  # type: ignore[index]
+                        retry_payload["generationConfig"]["maxOutputTokens"] = retry_tokens  # type: ignore[index]
+                        if safety_settings is not None:
+                            retry_payload["safetySettings"] = safety_settings  # type: ignore[assignment]
+                        if _is_debug_enabled():
+                            _debug_log(f"Gemini retry due to MAX_TOKENS with maxOutputTokens={retry_tokens}")
+                        retry_resp = requests.post(
+                            url,
+                            json=retry_payload,
+                            headers={"Content-Type": "application/json"},
+                            timeout=60,
+                        )
+                        try:
+                            retry_data = retry_resp.json()
+                            if isinstance(retry_data, dict):
+                                retry_candidates = retry_data.get("candidates")
+                                if isinstance(retry_candidates, list) and retry_candidates:
+                                    r_first = retry_candidates[0]
+                                    if isinstance(r_first, dict):
+                                        r_texts = _extract_texts_from_content(r_first.get("content"))
+                                        if r_texts:
+                                            return "\n".join(r_texts)
+                        except Exception:
+                            pass
                     if finish or safety:
                         return f"⚠️ Gemini returned no text. Info: finish={finish}, safety={safety}"
         return "⚠️ No response from Gemini."
