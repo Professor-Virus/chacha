@@ -12,6 +12,8 @@ from typing import Optional
 import sys
 from datetime import datetime
 
+from chacha.utils.setup import setup_api_key
+
 try:
     from PyPDF2 import PdfReader  # type: ignore
 except Exception:  # pragma: no cover - optional at runtime
@@ -50,6 +52,12 @@ def get_provider() -> str:
     if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
         return PROVIDER_GEMINI
 
+    # Interactive setup if no provider found
+    if sys.stdin.isatty():
+        setup_api_key()
+        # Retry after setup
+        return get_provider()
+
     raise ValueError(
         "❌ No AI provider configured. Set CHACHA_PROVIDER=anthropic|gemini and provide the corresponding API key."
     )
@@ -59,15 +67,25 @@ def get_api_key(provider: str) -> str:
     if provider == PROVIDER_ANTHROPIC:
         key = os.getenv("CLAUDE_API_KEY")
         if not key:
-            raise ValueError("❌ Missing CLAUDE_API_KEY for Anthropic.")
+            if sys.stdin.isatty():
+                setup_api_key(PROVIDER_ANTHROPIC)
+                key = os.getenv("CLAUDE_API_KEY")
+
+            if not key:
+                raise ValueError("❌ Missing CLAUDE_API_KEY for Anthropic.")
         return key
     if provider == PROVIDER_GEMINI:
         # Prefer GOOGLE_API_KEY if both are set (matches Google guidance)
         key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not key:
-            raise ValueError(
-                "❌ Missing GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini."
-            )
+            if sys.stdin.isatty():
+                setup_api_key(PROVIDER_GEMINI)
+                key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+            if not key:
+                raise ValueError(
+                    "❌ Missing GEMINI_API_KEY (or GOOGLE_API_KEY) for Gemini."
+                )
         return key
     raise ValueError(f"❌ Unknown provider: {provider}")
 
