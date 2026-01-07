@@ -46,24 +46,15 @@ pipx install --spec git+https://github.com/Professor-Virus/chacha.git@main chach
 
 > GitHub installs require your changes to be pushed. For local experimentation prefer `pipx install .`.
 
-## Usage Overview
-
-```bash
-chacha --help              # global help and options
-chacha commit --help       # smart commit workflow
-chacha explain PATH        # explain a file or PDF
-chacha fix PATH            # request AI-driven improvements
-chacha explain-commit      # summarize the latest commit
-```
 
 ### Smart commit workflow
 
-1. `chacha run commit`  
+1. `chacha commit run`  
    - Presents a multi-select list of changed files (Questionary).  
    - Shows a generated commit message, the target branch, and asks for confirmation.  
    - On approval, commits and pushes to the current or specified branch.
 
-2. `chacha run commit --auto`  
+2. `chacha commit run --auto`  
    - Stages every changed file without prompting before generating the commit message.
 
 Both flows rely on `git_utils` helpers for staging, diff collection, commit creation, and pushing.
