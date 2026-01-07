@@ -12,6 +12,42 @@ Chacha is a productivity-first developer assistant for your terminal. It wraps c
 
 ## Installation
 
+### Getting Started 🚀
+
+Install the published CLI straight from the repository:
+
+```bash
+# Install latest main
+pipx install --spec git+https://github.com/Professor-Virus/chacha.git@main chacha-cli
+
+# Uninstall
+pipx uninstall chacha-cli
+
+```
+
+### Smart commit workflow
+
+1. `chacha commit run`  
+   - Presents a multi-select list of changed files (Questionary).  
+   - Shows a generated commit message, the target branch, and asks for confirmation.  
+   - On approval, commits and pushes to the current or specified branch.
+
+2. `chacha commit run --auto`  
+   - Stages every changed file without prompting before generating the commit message.
+
+
+### Explain commit workflow
+
+1.  `chacha explain commit [TARGET] or --spec`
+      --> TARGET is a commit hash
+      --> --spec will expain the last commit
+
+2. `chacha explain commit -c N`
+      --> Explains the past N commits
+
+### Last Step
+
+
 ### Local development
 
 Use `pipx` to install from your working tree and pick up changes quickly:
@@ -47,23 +83,6 @@ pipx install --spec git+https://github.com/Professor-Virus/chacha.git@main chach
 > GitHub installs require your changes to be pushed. For local experimentation prefer `pipx install .`.
 
 
-### Smart commit workflow
-
-1. `chacha commit run`  
-   - Presents a multi-select list of changed files (Questionary).  
-   - Shows a generated commit message, the target branch, and asks for confirmation.  
-   - On approval, commits and pushes to the current or specified branch.
-
-2. `chacha commit run --auto`  
-   - Stages every changed file without prompting before generating the commit message.
-
-Both flows rely on `git_utils` helpers for staging, diff collection, commit creation, and pushing.
-
-### Explain & fix commands
-
-- `explain` reads the given file, delegates to the configured AI provider, and prints the response with minimal formatting.
-- `fix` (experimental) sends the file to the AI with “suggest improvements” prompting. Apply suggestions manually for now.
-- `explain-commit` grabs the latest commit diff/message and asks the AI to narrate the change.
 
 ## Configuration
 
