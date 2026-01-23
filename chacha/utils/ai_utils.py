@@ -15,6 +15,11 @@ from datetime import datetime
 from chacha.utils.setup import setup_api_key
 
 try:
+    from google import genai
+except ImportError:
+    genai = None  # type: ignore
+
+try:
     from PyPDF2 import PdfReader  # type: ignore
 except Exception:  # pragma: no cover - optional at runtime
     PdfReader = None  # type: ignore
@@ -494,61 +499,34 @@ def _generate_commit_with_anthropic(prompt: str) -> str:
 
 def _generate_commit_with_gemini(prompt: str) -> str:
     """Generate commit message using Google Gemini."""
+    if genai is None:
+        return "⚠️ google-genai package not installed. Run: pip install google-genai"
+    
+    # Ensure API key is set in environment for the SDK
     api_key = get_api_key(PROVIDER_GEMINI)
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.0-flash:generateContent"
-    )
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "text": prompt
-                    }
-                ]
-            }
-        ]
-    }
+    # The SDK reads from GEMINI_API_KEY or GOOGLE_API_KEY env var
+    if not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+        os.environ["GEMINI_API_KEY"] = api_key
     
-    response = requests.post(
-        url,
-        json=payload,
-        headers={
-            "Content-Type": "application/json",
-            "X-goog-api-key": api_key,
-        },
-        timeout=60,
-    )
-    
-    if response.status_code != 200:
-        try:
-            err = response.json()
-            if isinstance(err, dict) and "error" in err:
-                msg = err.get("error", {}).get("message") or str(err)
-                return f"⚠️ Gemini error ({response.status_code}): {msg}"
-        except Exception:
-            pass
-        return f"⚠️ Gemini HTTP {response.status_code}: {response.text[:200]}"
-    
-    data = response.json()
-    
-    if isinstance(data, dict) and "error" in data:
-        msg = data.get("error", {}).get("message") or str(data)
-        return f"⚠️ Gemini error: {msg}"
-    
-    if isinstance(data, dict):
-        candidates = data.get("candidates")
-        if isinstance(candidates, list) and candidates:
-            first = candidates[0]
-            if isinstance(first, dict):
-                content_obj = first.get("content")
-                if isinstance(content_obj, dict):
-                    parts = content_obj.get("parts")
-                    if isinstance(parts, list) and parts:
-                        part0 = parts[0]
-                        if isinstance(part0, dict) and "text" in part0:
-                            return str(part0["text"]).strip() or ""
-    
-    return "⚠️ No commit message received from Gemini."
+    try:
+        # The client gets the API key from the environment variable
+        client = genai.Client()
+        
+        # Get model from env or use default
+        model = os.getenv("CHACHA_GEMINI_MODEL") or "gemini-2.0-flash"
+        
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt
+        )
+        
+        if response and hasattr(response, 'text') and response.text:
+            return response.text.strip()
+        
+        return "⚠️ No commit message received from Gemini."
+    except Exception as e:
+        error_msg = str(e)
+        if hasattr(e, 'message'):
+            error_msg = e.message
+        return f"⚠️ Gemini error: {error_msg}"
 

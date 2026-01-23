@@ -1,4 +1,4 @@
-# Chacha CLI
+# Chacha CLI - Aman and Aayush
 
 Chacha is a productivity-first developer assistant for your terminal. It wraps common Git and AI-assisted workflows behind a single CLI so you can review changes, craft commits, and explain code without leaving your shell.
 

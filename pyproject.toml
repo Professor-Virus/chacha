@@ -15,6 +15,7 @@ gitpython = "*"
 PyPDF2 = "*"
 python-dotenv = "*"
 questionary = "*"
+google-genai = "*"
 
 [tool.poetry.scripts]
 chacha = "chacha.cli:app"
