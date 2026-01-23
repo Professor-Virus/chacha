@@ -31,7 +31,9 @@ pipx uninstall chacha-cli
     - This will guide you through picking your AI model.
     - Your API key will be store in your ./zshrc or ./bashrc
 
-![Setup Process](public/Screenshot%202026-01-23%20at%202.30.17%20PM.png)
+**Set up process below**
+
+![Setup Process](public/setup-process.png)
 
 ### Smart commit workflow
 
@@ -39,6 +41,10 @@ pipx uninstall chacha-cli
    - Presents a multi-select list of changed files (Questionary).  
    - Shows a generated commit message, the target branch, and asks for confirmation.  
    - On approval, commits and pushes to the current or specified branch.
+
+**Example below - You will have the proper commit message, I ran out of API credits.**
+
+![Commit Process](public/commit-process.png)
 
 2. `chacha commit run --auto`  
    - Stages every changed file without prompting before generating the commit message.
