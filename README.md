@@ -31,6 +31,8 @@ pipx uninstall chacha-cli
     - This will guide you through picking your AI model.
     - Your API key will be store in your ./zshrc or ./bashrc
 
+![Setup Process](public/Screenshot%202026-01-23%20at%202.30.17%20PM.png)
+
 ### Smart commit workflow
 
 1. `chacha commit run`  
